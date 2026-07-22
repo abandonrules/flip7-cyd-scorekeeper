@@ -12,6 +12,10 @@ jobs:
           python-version: "3.13"
       - name: Install PlatformIO
         run: python -m pip install platformio==6.1.19
+      - name: Generate build-only ESP-NOW keys
+        run: |
+          echo "FLIP7_ESPNOW_PMK=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+          echo "FLIP7_ESPNOW_LMK=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
       - name: Build firmware
         run: pio run
       - name: Test puzzle logic
