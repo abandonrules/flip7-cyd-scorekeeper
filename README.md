@@ -1,6 +1,20 @@
 # Flip7 CYD Scorekeeper
 
-A multiplayer Flip 7 scorekeeper for two ESP32-2432S028 (Cheap Yellow Display) boards.
+A collection of synchronized two-player games for a fixed pair of
+ESP32-2432S028 (Cheap Yellow Display) boards.
+
+## Games
+
+- **Greek Slide** — a shared 4×3 sliding puzzle with alternating turns.
+- **Mastermind** — one device privately enters a four-color code and the
+  other gets ten duplicate-aware guesses. Roles swap automatically after
+  every round and the match score persists between rounds.
+
+The host chooses a game from the home screen. Mastermind uses six colors,
+allows repeated colors, reports exact-position (`E`) and color-only (`C`)
+matches, and reveals the secret when the round ends.
+Both players have an `EXIT` button in landscape mode; either device can use
+it to return the synchronized pair to the game-selection screen.
 
 ## Goals
 - Two synchronized touchscreen scorekeepers

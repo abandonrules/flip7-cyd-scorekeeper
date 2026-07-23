@@ -3,10 +3,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "mastermind_logic.h"
 #include "puzzle_logic.h"
 
 constexpr uint32_t kProtocolMagic = 0x46374359;
-constexpr uint8_t kProtocolVersion = 4;
+constexpr uint8_t kProtocolVersion = 6;
 
 inline bool isSequenceNewer(uint32_t candidate, uint32_t previous) {
     return static_cast<int32_t>(candidate - previous) > 0;
@@ -37,6 +38,10 @@ enum class MessageType : uint8_t {
     RequestState,
     PuzzleState,
     PuzzleAck,
+    MastermindState,
+    MastermindFullState,
+    MastermindAck,
+    MastermindRequestState,
 };
 
 struct PacketHeader {
@@ -53,17 +58,10 @@ struct HeartbeatPacket {
     uint32_t uptimeMs;
 };
 
-static_assert(sizeof(PacketHeader) == 20, "PacketHeader wire format changed");
-static_assert(sizeof(HeartbeatPacket) == 24,
-              "HeartbeatPacket wire format changed");
-
 struct PuzzleStatePacket {
     PacketHeader header;
     ::PuzzleState state;
 };
-
-static_assert(sizeof(PuzzleStatePacket) == 44,
-              "PuzzleStatePacket wire format changed");
 
 struct PuzzleAckPacket {
     PacketHeader header;
@@ -75,9 +73,6 @@ struct PuzzleAckPacket {
     uint8_t reserved[3];
 };
 
-static_assert(sizeof(PuzzleAckPacket) == 40,
-              "PuzzleAckPacket wire format changed");
-
 struct StateRequestPacket {
     PacketHeader header;
     uint32_t gameId;
@@ -85,5 +80,42 @@ struct StateRequestPacket {
     uint32_t stateDigest;
 };
 
+struct GameStatePacket {
+    PacketHeader header;
+    MastermindState state;
+};
+
+struct GameAckPacket {
+    PacketHeader header;
+    uint32_t targetBoardId;
+    uint32_t gameId;
+    uint32_t revision;
+    uint32_t stateDigest;
+    MessageType acknowledgedType;
+    uint8_t reserved[3];
+};
+
+struct MastermindStateRequestPacket {
+    PacketHeader header;
+    uint32_t gameId;
+    uint32_t revision;
+    uint32_t stateDigest;
+};
+
+static_assert(sizeof(PacketHeader) == 20, "PacketHeader wire format changed");
+static_assert(sizeof(HeartbeatPacket) == 24,
+              "HeartbeatPacket wire format changed");
+static_assert(sizeof(PuzzleStatePacket) == 44,
+              "PuzzleStatePacket wire format changed");
+static_assert(sizeof(PuzzleAckPacket) == 40,
+              "PuzzleAckPacket wire format changed");
 static_assert(sizeof(StateRequestPacket) == 32,
               "StateRequestPacket wire format changed");
+static_assert(sizeof(MastermindState) == 96,
+              "MastermindState wire format changed");
+static_assert(sizeof(GameStatePacket) == 116,
+              "GameStatePacket wire format changed");
+static_assert(sizeof(GameAckPacket) == 40,
+              "GameAckPacket wire format changed");
+static_assert(sizeof(MastermindStateRequestPacket) == 32,
+              "MastermindStateRequestPacket wire format changed");
