@@ -1,0 +1,2 @@
+# CircuitPython generates boot_out.txt with CRLF line endings.
+macropad/keypad/boot_out.txt whitespace=cr-at-eol
