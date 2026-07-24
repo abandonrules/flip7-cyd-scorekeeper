@@ -7,7 +7,7 @@
 #include "puzzle_logic.h"
 
 constexpr uint32_t kProtocolMagic = 0x46374359;
-constexpr uint8_t kProtocolVersion = 6;
+constexpr uint8_t kProtocolVersion = 7;
 
 inline bool isSequenceNewer(uint32_t candidate, uint32_t previous) {
     return static_cast<int32_t>(candidate - previous) > 0;
@@ -63,6 +63,26 @@ struct PuzzleStatePacket {
     ::PuzzleState state;
 };
 
+static_assert(sizeof(PuzzleStatePacket) == 68,
+              "PuzzleStatePacket wire format changed");
+
+// The protocol is memcpy'd raw between two identically-compiled ESP32 targets.
+// Pin the wire-visible field offsets so any accidental reordering or padding
+// change fails at compile time rather than silently corrupting sync.
+static_assert(offsetof(::PuzzleState, tiles) == 0, "tiles offset changed");
+static_assert(offsetof(::PuzzleState, columns) == 30, "columns offset changed");
+static_assert(offsetof(::PuzzleState, rows) == 31, "rows offset changed");
+static_assert(offsetof(::PuzzleState, theme) == 32, "theme offset changed");
+static_assert(offsetof(::PuzzleState, phase) == 33, "phase offset changed");
+static_assert(offsetof(::PuzzleState, gameId) == 36, "gameId offset changed");
+static_assert(offsetof(::PuzzleState, revision) == 40,
+              "revision offset changed");
+static_assert(offsetof(::PuzzleState, turnBoardId) == 44,
+              "turnBoardId offset changed");
+static_assert(sizeof(::PuzzleState) == 48, "PuzzleState size changed");
+static_assert(offsetof(PacketHeader, senderId) == 8,
+              "PacketHeader senderId offset changed");
+
 struct PuzzleAckPacket {
     PacketHeader header;
     uint32_t targetBoardId;
@@ -105,7 +125,7 @@ struct MastermindStateRequestPacket {
 static_assert(sizeof(PacketHeader) == 20, "PacketHeader wire format changed");
 static_assert(sizeof(HeartbeatPacket) == 24,
               "HeartbeatPacket wire format changed");
-static_assert(sizeof(PuzzleStatePacket) == 44,
+static_assert(sizeof(PuzzleStatePacket) == 68,
               "PuzzleStatePacket wire format changed");
 static_assert(sizeof(PuzzleAckPacket) == 40,
               "PuzzleAckPacket wire format changed");

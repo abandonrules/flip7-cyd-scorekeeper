@@ -51,6 +51,21 @@ Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-
 The working CircuitPython keypad program from the companion Adafruit MacroPad
 RP2040 is preserved under [`macropad/keypad/`](macropad/keypad/README.md),
 including the exact deployed library set and restore instructions.
+
+## Sliding puzzles
+
+The paired CYDs offer two synchronized, alternating-turn layouts:
+
+- **Planet Slide:** a 3×3 eight-piece puzzle using the astronomical
+  symbols for Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and
+  Neptune.
+- **Greek Slide:** the original 4×3 eleven-piece Greek-symbol puzzle.
+
+A correctly positioned piece is visually locked by removing its colored
+background. Either player can press `EXIT` at any time, including while a move
+is still awaiting acknowledgment or the peer is temporarily offline. EXIT is
+synchronized and retried until both devices return to the selector.
+
 ### Security and recovery model
 
 The fixed encrypted CYDs are trusted game appliances. Mastermind hides the
