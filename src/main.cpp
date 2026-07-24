@@ -44,16 +44,27 @@ constexpr KnownBoard kKnownBoards[] = {
     {0x6AF4E9D4, {0xD4, 0xE9, 0xF4, 0x6A, 0xF4, 0xFC}},
     {0xE7D8CBB0, {0xB0, 0xCB, 0xD8, 0xE7, 0x1E, 0xD4}},
 };
-constexpr int16_t kBoardX = 11;
-constexpr int16_t kBoardY = 43;
-constexpr int16_t kTileWidth = 70;
-constexpr int16_t kTileHeight = 50;
-constexpr int16_t kTileGap = 6;
+
+constexpr int16_t kBoardAreaTop = 43;
+constexpr int16_t kBoardAreaWidth = 304;
+constexpr int16_t kBoardAreaHeight = 162;
+constexpr int16_t kTileGap = 4;
+constexpr int16_t kExitX = 271;
+constexpr int16_t kExitY = 3;
+constexpr int16_t kExitWidth = 46;
+constexpr int16_t kExitHeight = 26;
+
+struct PuzzleLayout {
+    int16_t x;
+    int16_t y;
+    int16_t tileWidth;
+    int16_t tileHeight;
+};
+
 constexpr uint16_t kMastermindColors[kMastermindColorCount + 1] = {
     TFT_DARKGREY, TFT_RED, TFT_ORANGE, TFT_YELLOW,
     TFT_GREEN, TFT_CYAN, TFT_MAGENTA,
 };
-
 TFT_eSPI display;
 SPIClass touchSpi(VSPI);
 XPT2046_Touchscreen touch(kTouchCsPin, kTouchIrqPin);
@@ -269,6 +280,20 @@ bool acceptPeerSequence(MessageType type, uint32_t sessionId,
     return fresh;
 }
 
+PuzzleLayout puzzleLayout(const PuzzleState& state) {
+    const int16_t columns = state.columns;
+    const int16_t rows = state.rows;
+    const int16_t tileWidth = std::min<int16_t>(
+        70, (kBoardAreaWidth - (columns - 1) * kTileGap) / columns);
+    const int16_t tileHeight = std::min<int16_t>(
+        50, (kBoardAreaHeight - (rows - 1) * kTileGap) / rows);
+    const int16_t boardWidth =
+        columns * tileWidth + (columns - 1) * kTileGap;
+    const int16_t boardX = static_cast<int16_t>(
+        (static_cast<int32_t>(display.width()) - boardWidth) / 2);
+    return {boardX, kBoardAreaTop, tileWidth, tileHeight};
+}
+
 void drawThickLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
                    uint16_t color) {
     display.drawLine(x0, y0, x1, y1, color);
@@ -343,6 +368,66 @@ void drawGreekSymbol(uint8_t symbol, int16_t cx, int16_t cy,
     }
 }
 
+void drawPlanetSymbol(uint8_t planet, int16_t cx, int16_t cy,
+                      uint16_t color) {
+    switch (planet) {
+        case 1:  // Mercury
+            display.drawCircle(cx, cy - 2, 9, color);
+            display.drawArc(cx, cy - 12, 8, 6, 200, 340, color, color);
+            drawThickLine(cx, cy + 7, cx, cy + 16, color);
+            drawThickLine(cx - 5, cy + 12, cx + 5, cy + 12, color);
+            break;
+        case 2:  // Venus
+            display.drawCircle(cx, cy - 4, 10, color);
+            display.drawCircle(cx, cy - 4, 11, color);
+            drawThickLine(cx, cy + 7, cx, cy + 17, color);
+            drawThickLine(cx - 6, cy + 12, cx + 6, cy + 12, color);
+            break;
+        case 3:  // Earth
+            display.drawCircle(cx, cy, 13, color);
+            display.drawCircle(cx, cy, 12, color);
+            drawThickLine(cx - 11, cy, cx + 11, cy, color);
+            drawThickLine(cx, cy - 11, cx, cy + 11, color);
+            break;
+        case 4:  // Mars
+            display.drawCircle(cx - 3, cy + 3, 10, color);
+            display.drawCircle(cx - 3, cy + 3, 11, color);
+            drawThickLine(cx + 5, cy - 5, cx + 14, cy - 14, color);
+            drawThickLine(cx + 8, cy - 14, cx + 14, cy - 14, color);
+            drawThickLine(cx + 14, cy - 14, cx + 14, cy - 8, color);
+            break;
+        case 5:  // Jupiter
+            drawThickLine(cx - 13, cy - 8, cx + 4, cy - 8, color);
+            display.drawArc(cx - 3, cy - 1, 10, 8, 260, 80, color, color);
+            drawThickLine(cx + 5, cy - 13, cx + 5, cy + 14, color);
+            drawThickLine(cx - 4, cy + 7, cx + 13, cy + 7, color);
+            break;
+        case 6:  // Saturn
+            drawThickLine(cx - 6, cy - 15, cx - 6, cy + 12, color);
+            drawThickLine(cx - 13, cy - 7, cx + 4, cy - 7, color);
+            display.drawArc(cx + 1, cy + 2, 9, 10, 260, 95, color, color);
+            drawThickLine(cx, cy + 12, cx + 10, cy + 12, color);
+            break;
+        case 7:  // Uranus
+            display.drawCircle(cx, cy + 3, 7, color);
+            display.fillCircle(cx, cy + 3, 2, color);
+            drawThickLine(cx, cy - 15, cx, cy - 4, color);
+            drawThickLine(cx - 10, cy - 10, cx + 10, cy - 10, color);
+            display.drawCircle(cx - 13, cy - 10, 3, color);
+            display.drawCircle(cx + 13, cy - 10, 3, color);
+            break;
+        case 8:  // Neptune
+            drawThickLine(cx, cy - 14, cx, cy + 14, color);
+            drawThickLine(cx - 13, cy - 10, cx - 13, cy - 2, color);
+            drawThickLine(cx + 13, cy - 10, cx + 13, cy - 2, color);
+            display.drawArc(cx, cy - 3, 13, 11, 0, 180, color, color);
+            drawThickLine(cx - 7, cy + 10, cx + 7, cy + 10, color);
+            break;
+        default:
+            break;
+    }
+}
+
 uint16_t tileColor(uint8_t tile) {
     constexpr uint16_t colors[] = {
         TFT_DARKCYAN, TFT_MAROON, TFT_DARKGREEN, TFT_PURPLE,
@@ -371,30 +456,62 @@ void renderLinkBadge(bool online) {
     display.drawString(online ? "LINKED" : "WAITING", 286, 31, 1);
 }
 
-void renderHome(bool online) {
+void renderExitButton(bool online) {
+    display.fillRoundRect(kExitX, kExitY, kExitWidth, kExitHeight, 5,
+                          online ? TFT_RED : TFT_ORANGE);
+    display.drawRoundRect(kExitX, kExitY, kExitWidth, kExitHeight, 5,
+                          TFT_WHITE);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_WHITE, online ? TFT_RED : TFT_ORANGE);
+    display.drawString("EXIT", kExitX + kExitWidth / 2,
+                       kExitY + kExitHeight / 2, 2);
+}
+
+void renderHome(bool online, bool deliveryPending) {
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
     display.drawString("TWO-PLAYER GAMES", display.width() / 2, 25, 4);
     renderLinkBadge(online);
 
+    if (deliveryPending) {
+        display.setTextColor(TFT_YELLOW, TFT_NAVY);
+        display.drawString("RETURNING BOTH BOARDS HOME...",
+                           display.width() / 2, 123, 2);
+        return;
+    }
+
     if (localIsHost() && online) {
-        display.fillRoundRect(45, 65, 230, 55, 10, TFT_DARKGREEN);
-        display.drawRoundRect(45, 65, 230, 55, 10, TFT_WHITE);
-        display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-        display.drawString("GREEK SLIDE", display.width() / 2, 92, 4);
-        display.fillRoundRect(45, 135, 230, 55, 10, TFT_PURPLE);
-        display.drawRoundRect(45, 135, 230, 55, 10, TFT_WHITE);
+        display.setTextColor(TFT_CYAN, TFT_NAVY);
+        display.drawString("Choose a synchronized game", display.width() / 2,
+                           61, 2);
+
+        // Slide puzzles row
+        display.fillRoundRect(10, 82, 145, 89, 10, TFT_PURPLE);
+        display.drawRoundRect(10, 82, 145, 89, 10, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_PURPLE);
-        display.drawString("MASTERMIND", display.width() / 2, 162, 4);
+        display.drawString("PLANETS", 82, 111, 4);
+        display.drawString("8 PIECES / 3x3", 82, 147, 2);
+
+        display.fillRoundRect(165, 82, 145, 89, 10, TFT_DARKGREEN);
+        display.drawRoundRect(165, 82, 145, 89, 10, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+        display.drawString("GREEK", 237, 111, 4);
+        display.drawString("11 PIECES / 4x3", 237, 147, 2);
+
+        // Mastermind row
+        display.fillRoundRect(45, 185, 230, 55, 10, TFT_MAROON);
+        display.drawRoundRect(45, 185, 230, 55, 10, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_MAROON);
+        display.drawString("MASTERMIND", display.width() / 2, 212, 4);
     } else {
         display.setTextColor(online ? TFT_LIGHTGREY : TFT_ORANGE, TFT_NAVY);
         display.drawString(online ? "WAITING FOR HOST" : "CONNECT PEER",
                            display.width() / 2, 125, 2);
     }
     display.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
-    display.drawString("Choose a game on the host", display.width() / 2, 218,
-                       2);
+    display.drawString("Locked pieces lose their background",
+                       display.width() / 2, 207, 2);
 }
 
 void renderPuzzle(bool online, const PuzzleState& game,
@@ -402,35 +519,42 @@ void renderPuzzle(bool online, const PuzzleState& game,
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
-    display.drawString("GREEK SLIDE", display.width() / 2, 13, 4);
-    renderLinkBadge(online);
+    display.drawString(game.theme == PuzzleTheme::Planets ? "PLANET SLIDE"
+                                                          : "GREEK SLIDE",
+                       145, 13, 4);
+    renderExitButton(online);
 
-    for (uint8_t position = 0; position < kPuzzleTileCount; ++position) {
-        const int16_t column = position % kPuzzleColumns;
-        const int16_t row = position / kPuzzleColumns;
-        const int16_t x = kBoardX + column * (kTileWidth + kTileGap);
-        const int16_t y = kBoardY + row * (kTileHeight + kTileGap);
+    const PuzzleLayout layout = puzzleLayout(game);
+    const uint8_t count = puzzleTileCount(game);
+    for (uint8_t position = 0; position < count; ++position) {
+        const int16_t column = position % game.columns;
+        const int16_t row = position / game.columns;
+        const int16_t x = layout.x + column * (layout.tileWidth + kTileGap);
+        const int16_t y = layout.y + row * (layout.tileHeight + kTileGap);
         const uint8_t tile = game.tiles[position];
         if (tile == 0) {
-            display.drawRoundRect(x, y, kTileWidth, kTileHeight, 7,
+            display.drawRoundRect(x, y, layout.tileWidth, layout.tileHeight, 7,
                                   TFT_DARKGREY);
-            display.drawRoundRect(x + 1, y + 1, kTileWidth - 2,
-                                  kTileHeight - 2, 6, TFT_DARKGREY);
             continue;
         }
-        display.fillRoundRect(x, y, kTileWidth, kTileHeight, 7,
-                              tileColor(tile));
-        const uint16_t frame =
-            isTileCorrect(game, position) ? TFT_GREEN : TFT_WHITE;
-        display.drawRoundRect(x, y, kTileWidth, kTileHeight, 7, frame);
-        display.drawRoundRect(x + 1, y + 1, kTileWidth - 2,
-                              kTileHeight - 2, 6, frame);
-        if (isTileCorrect(game, position)) {
-            display.drawRoundRect(x + 2, y + 2, kTileWidth - 4,
-                                  kTileHeight - 4, 5, frame);
+
+        const bool locked = isTileCorrect(game, position);
+        if (!locked) {
+            display.fillRoundRect(x, y, layout.tileWidth, layout.tileHeight, 7,
+                                  tileColor(tile));
+            display.drawRoundRect(x, y, layout.tileWidth, layout.tileHeight, 7,
+                                  TFT_WHITE);
+            display.drawRoundRect(x + 1, y + 1, layout.tileWidth - 2,
+                                  layout.tileHeight - 2, 6, TFT_WHITE);
         }
-        drawGreekSymbol(tile, x + kTileWidth / 2, y + kTileHeight / 2,
-                        TFT_WHITE);
+        const int16_t centerX = x + layout.tileWidth / 2;
+        const int16_t centerY = y + layout.tileHeight / 2;
+        const uint16_t symbolColor = locked ? TFT_GREEN : TFT_WHITE;
+        if (game.theme == PuzzleTheme::Planets) {
+            drawPlanetSymbol(tile, centerX, centerY, symbolColor);
+        } else {
+            drawGreekSymbol(tile, centerX, centerY, symbolColor);
+        }
     }
 
     display.fillRect(0, 211, display.width(), 29, TFT_NAVY);
@@ -456,15 +580,17 @@ void renderPuzzle(bool online, const PuzzleState& game,
     display.drawString(turnCount, 315, 225, 2);
 }
 
-void renderComplete(bool online) {
+void renderComplete(bool online, const PuzzleState& game) {
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_GREEN, TFT_NAVY);
     display.drawString("PUZZLE COMPLETE!", display.width() / 2, 96, 4);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
-    display.drawString("All Greek symbols are home", display.width() / 2,
-                       138, 2);
-    renderLinkBadge(online);
+    display.drawString(game.theme == PuzzleTheme::Planets
+                           ? "All eight planets are aligned"
+                           : "All Greek symbols are home",
+                       display.width() / 2, 138, 2);
+    renderExitButton(online);
 }
 
 void drawMastermindCode(const MastermindCode& code, int16_t startX,
@@ -614,15 +740,15 @@ void renderScreen() {
 
     const bool online = peerOnline();
     if (mode == ScreenMode::Home) {
-        renderHome(online);
+        renderHome(online, deliveryPending);
     } else if (mode == ScreenMode::Complete) {
-        renderComplete(online);
+        renderComplete(online, game);
     } else if (mode == ScreenMode::Mastermind && mastermindReady) {
         renderMastermind(online, mastermind, mastermindDeliveryPending);
     } else if (mode == ScreenMode::Puzzle && ready) {
         renderPuzzle(online, game, deliveryPending);
     } else {
-        renderHome(online);
+        renderHome(online, deliveryPending);
     }
 }
 
@@ -697,7 +823,22 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
     }
     const bool validTurnId = packet.state.turnBoardId == boardId ||
                              packet.state.turnBoardId == gamePeerBoardId;
-    if (validTurnId && type == MessageType::FullState) {
+    const bool exitSignalApplied =
+        validTurnId && stateReady &&
+        packet.state.phase == PuzzlePhase::Exited &&
+        applyPuzzleExitSignal(puzzleState, packet.state,
+                              packet.header.senderId, boardId);
+    if (exitSignalApplied) {
+        const bool terminalConverged =
+            isSamePuzzle(puzzleState, packet.state);
+        pendingDelivery.active = false;
+        reconciliationPending = false;
+        sendFullStateSoon = !terminalConverged;
+        screenMode = ScreenMode::Home;
+        completedAtMs = 0;
+        displayDirty = true;
+        accepted = true;
+    } else if (validTurnId && type == MessageType::FullState) {
         duplicate = stateReady && isSamePuzzle(puzzleState, packet.state);
         const PuzzleVersionOrder order =
             stateReady ? comparePuzzleVersion(puzzleState, packet.state)
@@ -705,13 +846,23 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
         const bool equalConflict =
             stateReady && order == PuzzleVersionOrder::Same && !duplicate;
         const bool peerIsAuthority = packet.header.senderId < boardId;
-        if (!stateReady || order == PuzzleVersionOrder::Newer ||
-            (equalConflict && peerIsAuthority)) {
+        const bool participantsValid = isValidPuzzleForParticipants(
+            packet.state, packet.header.senderId, boardId);
+        const bool adopt =
+            !stateReady
+                ? participantsValid
+                : shouldAdoptFullState(puzzleState, packet.state,
+                                       packet.header.senderId, boardId) ||
+                      (equalConflict && peerIsAuthority && participantsValid);
+        if (adopt) {
             puzzleState = packet.state;
             stateReady = true;
             pendingDelivery.active = false;
             reconciliationPending = false;
-            if (isPuzzleSolved(puzzleState)) {
+            if (puzzleState.phase == PuzzlePhase::Exited) {
+                screenMode = ScreenMode::Home;
+                completedAtMs = 0;
+            } else if (isPuzzleSolved(puzzleState)) {
                 screenMode = ScreenMode::Complete;
                 completedAtMs = millis();
             } else {
@@ -722,15 +873,20 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
             fullLogRevision = puzzleState.revision;
             fullLogPending = true;
             accepted = true;
-        } else if (order == PuzzleVersionOrder::Older ||
-                   (equalConflict && !peerIsAuthority)) {
-            sendFullStateSoon = true;
+        } else if (!duplicate && stateReady) {
+            if (boardId < packet.header.senderId) {
+                sendFullStateSoon = true;
+            } else {
+                requestStateSoon = true;
+                reconciliationPending = true;
+            }
         }
     } else if (validTurnId && type == MessageType::PuzzleState) {
         duplicate = stateReady && isSamePuzzle(puzzleState, packet.state);
         if (!stateReady && packet.state.revision == 1) {
             PuzzleState base = makeScrambledPuzzle(
-                std::min(boardId, gamePeerBoardId), packet.state.gameId);
+                std::min(boardId, gamePeerBoardId), packet.state.gameId,
+                puzzleSpec(packet.state));
             if (isValidRemoteTransition(base, packet.state,
                                         packet.header.senderId, boardId)) {
                 puzzleState = packet.state;
@@ -1224,25 +1380,30 @@ bool mapTouch(int16_t& x, int16_t& y, TS_Point& point) {
     return true;
 }
 
-int8_t puzzlePositionAt(int16_t x, int16_t y) {
-    if (x < kBoardX || y < kBoardY) {
+int8_t puzzlePositionAt(const PuzzleState& game, int16_t x, int16_t y) {
+    const PuzzleLayout layout = puzzleLayout(game);
+    if (x < layout.x || y < layout.y) {
         return -1;
     }
-    const int16_t column = (x - kBoardX) / (kTileWidth + kTileGap);
-    const int16_t row = (y - kBoardY) / (kTileHeight + kTileGap);
-    if (column < 0 || column >= kPuzzleColumns || row < 0 ||
-        row >= kPuzzleRows) {
+    const int16_t column =
+        (x - layout.x) / (layout.tileWidth + kTileGap);
+    const int16_t row =
+        (y - layout.y) / (layout.tileHeight + kTileGap);
+    if (column < 0 || column >= game.columns || row < 0 ||
+        row >= game.rows) {
         return -1;
     }
-    const int16_t localX = (x - kBoardX) % (kTileWidth + kTileGap);
-    const int16_t localY = (y - kBoardY) % (kTileHeight + kTileGap);
-    if (localX >= kTileWidth || localY >= kTileHeight) {
+    const int16_t localX =
+        (x - layout.x) % (layout.tileWidth + kTileGap);
+    const int16_t localY =
+        (y - layout.y) % (layout.tileHeight + kTileGap);
+    if (localX >= layout.tileWidth || localY >= layout.tileHeight) {
         return -1;
     }
-    return row * kPuzzleColumns + column;
+    return row * game.columns + column;
 }
 
-void startPuzzle() {
+void startPuzzle(const PuzzleSpec& spec) {
     PuzzleState started{};
     portENTER_CRITICAL(&gameMux);
     if (activeGame.kind != ActiveGameKind::Home) {
@@ -1257,7 +1418,7 @@ void startPuzzle() {
         return;
     }
     started = makeScrambledPuzzle(std::min(boardId, gamePeerBoardId),
-                                  nextGameId);
+                                  nextGameId, spec);
     puzzleState = started;
     stateReady = true;
     activeGame = {nextGameId, ActiveGameKind::Puzzle};
@@ -1427,16 +1588,47 @@ void handleTouch() {
 
     ScreenMode mode;
     bool pending;
+    PuzzleState snapshot{};
     portENTER_CRITICAL(&gameMux);
     mode = screenMode;
     pending = pendingDelivery.active;
+    snapshot = puzzleState;
     portEXIT_CRITICAL(&gameMux);
 
+    const bool exitPressed =
+        x >= kExitX && x < kExitX + kExitWidth && y >= kExitY &&
+        y < kExitY + kExitHeight;
+    if ((mode == ScreenMode::Puzzle || mode == ScreenMode::Complete) &&
+        exitPressed) {
+        PuzzleState exited{};
+        bool accepted = false;
+        portENTER_CRITICAL(&gameMux);
+        if (stateReady) {
+            exited = puzzleState;
+            accepted = exitPuzzle(exited, boardId, gamePeerBoardId);
+            if (accepted) {
+                puzzleState = exited;
+                pendingDelivery = PendingDelivery{
+                    true, MessageType::PuzzleState, exited, 0};
+                screenMode = ScreenMode::Home;
+                completedAtMs = 0;
+                reconciliationPending = false;
+                displayDirty = true;
+            }
+        }
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
+
     if (mode == ScreenMode::Home) {
-        if (localIsHost() && peerOnline() && x >= 45 && x < 275) {
-            if (y >= 65 && y < 120) {
-                startPuzzle();
-            } else if (y >= 135 && y < 190) {
+        if (localIsHost() && peerOnline() && !pending && y >= 82 && y < 171) {
+            if (x >= 10 && x < 155) {
+                startPuzzle({3, 3, PuzzleTheme::Planets});
+            } else if (x >= 165 && x < 310) {
+                startPuzzle({4, 3, PuzzleTheme::Greek});
+            }
+        } else if (localIsHost() && peerOnline() && x >= 45 && x < 275) {
+            if (y >= 185 && y < 240) {
                 startMastermind();
             }
         }
@@ -1450,7 +1642,7 @@ void handleTouch() {
         return;
     }
 
-    const int8_t position = puzzlePositionAt(x, y);
+    const int8_t position = puzzlePositionAt(snapshot, x, y);
     if (position < 0) {
         return;
     }
@@ -1458,7 +1650,12 @@ void handleTouch() {
     bool accepted = false;
     uint8_t tile = 0;
     portENTER_CRITICAL(&gameMux);
-    if (stateReady && activeGame.kind == ActiveGameKind::Puzzle) {
+    if (stateReady && screenMode == ScreenMode::Puzzle &&
+        !pendingDelivery.active && puzzleState.gameId == snapshot.gameId &&
+        puzzleState.revision == snapshot.revision &&
+        puzzleState.phase == snapshot.phase &&
+        puzzleState.turnBoardId == snapshot.turnBoardId &&
+        samePuzzleSpec(puzzleSpec(puzzleState), puzzleSpec(snapshot))) {
         tile = puzzleState.tiles[position];
         accepted = tryPuzzleMove(puzzleState, position, boardId,
                                  gamePeerBoardId);
