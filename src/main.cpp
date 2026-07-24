@@ -117,6 +117,7 @@ MastermindState mastermindState{};
 MastermindPendingDelivery mastermindPendingDelivery{};
 MastermindPendingAck mastermindPendingAck{};
 MastermindCode draftCode{{1, 1, 1, 1}};
+MastermindCode lastSubmittedGuess{{1, 1, 1, 1}};
 ScreenMode screenMode = ScreenMode::Home;
 ActiveGameClock activeGame{kNoActiveGameEpoch, ActiveGameKind::Home};
 uint32_t boardId = 0;
@@ -152,6 +153,7 @@ bool sendMastermindFullStateSoon = false;
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
+MastermindPhase lastAdoptedMastermindPhase = MastermindPhase::Exited;
 
 PacketHeader makeHeader(MessageType type) {
     return PacketHeader{kProtocolMagic, kProtocolVersion, type, boardId,
@@ -642,13 +644,24 @@ bool validMastermindIdentity(const MastermindState& state) {
     return state.hostBoardId == host && state.guestBoardId == guest;
 }
 
-void prepareMastermindDraft() {
-    draftCode = MastermindCode{{1, 1, 1, 1}};
+void prepareMastermindDraft(const MastermindState& state) {
+    // Carry over this device's own previous guess only when it is the
+    // codebreaker entering the Guessing phase. On SecretEntry (making the
+    // code) or when this board is the codemaker, reset to the neutral default.
+    // noteMastermindPhase fires on both boards for every synced transition, so
+    // keying on codemakerBoardId keeps each player seeded with their own guess
+    // across the per-round role swap.
+    if (state.phase == MastermindPhase::Guessing &&
+        state.codemakerBoardId != boardId) {
+        draftCode = lastSubmittedGuess;
+    } else {
+        draftCode = MastermindCode{{1, 1, 1, 1}};
+    }
     selectedPeg = 0;
 }
 
 void noteMastermindPhase(const MastermindState& state) {
-    prepareMastermindDraft();
+    prepareMastermindDraft(state);
     if (state.phase == MastermindPhase::RoundComplete) {
         mastermindCompletedAtMs = millis();
     }
@@ -906,6 +919,7 @@ void processMastermindStatePacket(const uint8_t* address,
             if (!mastermindStateReady ||
                 isValidMastermindTransition(mastermindState, packet.state,
                                             packet.header.senderId)) {
+                oldPhase = mastermindState.phase;
                 mastermindState = packet.state;
                 mastermindStateReady = true;
                 accepted = true;
@@ -1403,6 +1417,7 @@ void handleMastermindTouch(int16_t x, int16_t y) {
         if (x >= 211 && x <= 303 && y >= 185 && y <= 224) {
             MastermindState next = snapshot;
             if (submitMastermindGuess(next, draftCode, boardId)) {
+                lastSubmittedGuess = draftCode;
                 commitMastermindState(next, MessageType::MastermindState,
                                       &snapshot);
             }
