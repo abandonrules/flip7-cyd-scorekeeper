@@ -1,6 +1,20 @@
 # Flip7 CYD Scorekeeper
 
-A multiplayer Flip 7 scorekeeper for two ESP32-2432S028 (Cheap Yellow Display) boards.
+A collection of synchronized two-player games for a fixed pair of
+ESP32-2432S028 (Cheap Yellow Display) boards.
+
+## Games
+
+- **Greek Slide** — a shared 4×3 sliding puzzle with alternating turns.
+- **Mastermind** — one device privately enters a four-color code and the
+  other gets ten duplicate-aware guesses. Roles swap automatically after
+  every round and the match score persists between rounds.
+
+The host chooses a game from the home screen. Mastermind uses six colors,
+allows repeated colors, reports exact-position (`E`) and color-only (`C`)
+matches, and reveals the secret when the round ends.
+Both players have an `EXIT` button in landscape mode; either device can use
+it to return the synchronized pair to the game-selection screen.
 
 ## Goals
 - Two synchronized touchscreen scorekeepers
@@ -37,6 +51,18 @@ Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-
 The working CircuitPython keypad program from the companion Adafruit MacroPad
 RP2040 is preserved under [`macropad/keypad/`](macropad/keypad/README.md),
 including the exact deployed library set and restore instructions.
+### Security and recovery model
+
+The fixed encrypted CYDs are trusted game appliances. Mastermind hides the
+codemaker's secret from the codebreaker's UI, but synchronizes the encrypted
+full state so either trusted board can recover the round after the other board
+restarts. This is not intended to resist physical extraction or modified
+firmware on one of the paired boards.
+
+Game state is currently volatile: one board can restart and reconcile from the
+surviving peer, while restarting both boards returns the pair to the game menu.
+Receiver-restart replay hardening is tracked in
+[issue #11](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/11).
 
 ## Milestones
 1. Single-board UI
