@@ -46,6 +46,11 @@ pio run
 
 Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-only keys because CI firmware is not installed on the physical pair.
 
+## Companion hardware
+
+The working CircuitPython keypad program from the companion Adafruit MacroPad
+RP2040 is preserved under [`macropad/keypad/`](macropad/keypad/README.md),
+including the exact deployed library set and restore instructions.
 ### Security and recovery model
 
 The fixed encrypted CYDs are trusted game appliances. Mastermind hides the
