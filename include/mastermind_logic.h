@@ -119,6 +119,9 @@ inline bool isValidMastermindState(const MastermindState& state) {
         state.hostBoardId == state.guestBoardId ||
         (state.codemakerBoardId != state.hostBoardId &&
          state.codemakerBoardId != state.guestBoardId) || state.round == 0 ||
+        state.codemakerBoardId !=
+            (state.round % 2 == 1 ? state.hostBoardId
+                                  : state.guestBoardId) ||
         state.guessCount > kMastermindMaxGuesses ||
         state.phase < MastermindPhase::SecretEntry ||
         state.phase > MastermindPhase::Exited) {
@@ -232,7 +235,7 @@ inline bool submitMastermindGuess(MastermindState& state,
 inline bool advanceMastermindRound(MastermindState& state,
                                    uint32_t actorBoardId) {
     if (state.phase != MastermindPhase::RoundComplete ||
-        actorBoardId != state.hostBoardId) {
+        actorBoardId != state.hostBoardId || state.round == UINT8_MAX) {
         return false;
     }
     state.codemakerBoardId = mastermindCodebreakerBoardId(state);
@@ -300,6 +303,24 @@ inline bool isMastermindDeliverySuperseded(
     const MastermindState& pending, const MastermindState& observed) {
     return pending.gameId == observed.gameId &&
            pending.revision < observed.revision;
+}
+
+inline bool applyMastermindExitSignal(
+    MastermindState& current, const MastermindState& candidate,
+    uint32_t senderBoardId) {
+    if (!isValidMastermindState(current) ||
+        !isValidMastermindState(candidate) ||
+        candidate.phase != MastermindPhase::Exited ||
+        current.gameId != candidate.gameId ||
+        current.hostBoardId != candidate.hostBoardId ||
+        current.guestBoardId != candidate.guestBoardId) {
+        return false;
+    }
+    if (current.phase == MastermindPhase::Exited) {
+        return senderBoardId == current.hostBoardId ||
+               senderBoardId == current.guestBoardId;
+    }
+    return exitMastermindMatch(current, senderBoardId);
 }
 
 inline bool isValidMastermindTransition(const MastermindState& current,

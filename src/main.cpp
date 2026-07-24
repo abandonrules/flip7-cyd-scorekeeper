@@ -5,10 +5,12 @@
 #include <XPT2046_Touchscreen.h>
 #include <esp_now.h>
 #include <esp_system.h>
+#include <freertos/semphr.h>
 
 #include <algorithm>
 #include <cstring>
 
+#include "game_selection.h"
 #include "generated_peer_keys.h"
 #include "protocol.h"
 #include "puzzle_logic.h"
@@ -57,6 +59,7 @@ SPIClass touchSpi(VSPI);
 XPT2046_Touchscreen touch(kTouchCsPin, kTouchIrqPin);
 portMUX_TYPE linkMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE gameMux = portMUX_INITIALIZER_UNLOCKED;
+SemaphoreHandle_t protocolMutex = nullptr;
 
 enum class ScreenMode : uint8_t { Home, Puzzle, Complete, Mastermind };
 
@@ -115,6 +118,7 @@ MastermindPendingDelivery mastermindPendingDelivery{};
 MastermindPendingAck mastermindPendingAck{};
 MastermindCode draftCode{{1, 1, 1, 1}};
 ScreenMode screenMode = ScreenMode::Home;
+ActiveGameClock activeGame{kNoActiveGameEpoch, ActiveGameKind::Home};
 uint32_t boardId = 0;
 uint32_t bootSessionId = 0;
 uint32_t expectedPeerBoardId = 0;
@@ -489,10 +493,10 @@ void renderMastermindHeader(const MastermindState& state, bool online) {
              state.hostScore, state.guestScore);
     display.drawString(scoreText, 179, 15, 2);
     display.fillRoundRect(271, 3, 46, 26, 5,
-                          online ? TFT_RED : TFT_DARKGREY);
+                          online ? TFT_RED : TFT_ORANGE);
     display.drawRoundRect(271, 3, 46, 26, 5, TFT_WHITE);
     display.setTextColor(TFT_WHITE,
-                         online ? TFT_RED : TFT_DARKGREY);
+                         online ? TFT_RED : TFT_ORANGE);
     display.drawString("EXIT", 294, 16, 2);
 }
 
@@ -686,6 +690,11 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
     bool accepted = false;
     bool duplicate = false;
     portENTER_CRITICAL(&gameMux);
+    if (!shouldAcceptGameState(activeGame, ActiveGameKind::Puzzle,
+                               packet.state.gameId)) {
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
     const bool validTurnId = packet.state.turnBoardId == boardId ||
                              packet.state.turnBoardId == gamePeerBoardId;
     if (validTurnId && type == MessageType::FullState) {
@@ -755,8 +764,12 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
         }
     }
     if (accepted) {
+        activeGame = {puzzleState.gameId, ActiveGameKind::Puzzle};
         mastermindPendingDelivery.active = false;
         mastermindReconciliationPending = false;
+        mastermindRequestStateSoon = false;
+        sendFullStateSoon = false;
+        sendMastermindFullStateSoon = false;
     }
     if (duplicate && pendingDelivery.active &&
         isDeliverySuperseded(pendingDelivery.state, packet.state)) {
@@ -851,37 +864,55 @@ void processMastermindStatePacket(const uint8_t* address,
     bool accepted = false;
     bool duplicate = false;
     portENTER_CRITICAL(&gameMux);
+    const bool terminal = packet.state.phase == MastermindPhase::Exited;
+    if (!shouldAcceptGameState(activeGame, ActiveGameKind::Mastermind,
+                               packet.state.gameId, terminal)) {
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
     duplicate = mastermindStateReady &&
                 sameMastermindState(mastermindState, packet.state);
-    const MastermindVersionOrder order =
-        mastermindStateReady
-            ? compareMastermindVersion(mastermindState, packet.state)
-            : MastermindVersionOrder::Newer;
-    if (type == MessageType::MastermindFullState) {
-        const bool equalConflict = mastermindStateReady &&
-            order == MastermindVersionOrder::Same && !duplicate;
-        const bool peerIsAuthority = packet.header.senderId < boardId;
-        if (!mastermindStateReady || order == MastermindVersionOrder::Newer ||
-            (equalConflict && peerIsAuthority)) {
-            mastermindState = packet.state;
-            mastermindStateReady = true;
-            mastermindPendingDelivery.active = false;
-            mastermindReconciliationPending = false;
-            accepted = true;
-        } else if (order == MastermindVersionOrder::Older ||
-                   (equalConflict && !peerIsAuthority)) {
-            sendMastermindFullStateSoon = true;
-        }
-    } else if (type == MessageType::MastermindState) {
-        if (!mastermindStateReady ||
-            isValidMastermindTransition(mastermindState, packet.state,
-                                        packet.header.senderId)) {
-            mastermindState = packet.state;
-            mastermindStateReady = true;
-            accepted = true;
-        } else if (!duplicate) {
-            mastermindRequestStateSoon = true;
-            mastermindReconciliationPending = true;
+    const bool exitSignalApplied =
+        type == MessageType::MastermindState && terminal &&
+        mastermindStateReady &&
+        applyMastermindExitSignal(mastermindState, packet.state,
+                                  packet.header.senderId);
+    if (exitSignalApplied) {
+        mastermindPendingDelivery.active = false;
+        mastermindReconciliationPending = false;
+        accepted = true;
+    } else {
+        const MastermindVersionOrder order =
+            mastermindStateReady
+                ? compareMastermindVersion(mastermindState, packet.state)
+                : MastermindVersionOrder::Newer;
+        if (type == MessageType::MastermindFullState) {
+            const bool equalConflict = mastermindStateReady &&
+                order == MastermindVersionOrder::Same && !duplicate;
+            const bool peerIsAuthority = packet.header.senderId < boardId;
+            if (!mastermindStateReady ||
+                order == MastermindVersionOrder::Newer ||
+                (equalConflict && peerIsAuthority)) {
+                mastermindState = packet.state;
+                mastermindStateReady = true;
+                mastermindPendingDelivery.active = false;
+                mastermindReconciliationPending = false;
+                accepted = true;
+            } else if (order == MastermindVersionOrder::Older ||
+                       (equalConflict && !peerIsAuthority)) {
+                sendMastermindFullStateSoon = true;
+            }
+        } else if (type == MessageType::MastermindState) {
+            if (!mastermindStateReady ||
+                isValidMastermindTransition(mastermindState, packet.state,
+                                            packet.header.senderId)) {
+                mastermindState = packet.state;
+                mastermindStateReady = true;
+                accepted = true;
+            } else if (!duplicate) {
+                mastermindRequestStateSoon = true;
+                mastermindReconciliationPending = true;
+            }
         }
     }
     if ((accepted || duplicate) && mastermindPendingDelivery.active &&
@@ -892,6 +923,15 @@ void processMastermindStatePacket(const uint8_t* address,
     if (accepted) {
         pendingDelivery.active = false;
         reconciliationPending = false;
+        requestStateSoon = false;
+        sendFullStateSoon = false;
+        sendMastermindFullStateSoon = false;
+        activeGame = {
+            mastermindState.gameId,
+            mastermindState.phase == MastermindPhase::Exited
+                ? ActiveGameKind::Home
+                : ActiveGameKind::Mastermind,
+        };
         screenMode = mastermindState.phase == MastermindPhase::Exited
                          ? ScreenMode::Home
                          : ScreenMode::Mastermind;
@@ -987,6 +1027,10 @@ void onPacketReceived(const uint8_t* address, const uint8_t* data, int length) {
                         header.sequence);
         return;
     }
+    if (protocolMutex == nullptr ||
+        xSemaphoreTake(protocolMutex, 0) != pdTRUE) {
+        return;
+    }
     if (header.type == MessageType::PuzzleState ||
         header.type == MessageType::FullState) {
         processStatePacket(address, data, length, header.type);
@@ -1002,6 +1046,7 @@ void onPacketReceived(const uint8_t* address, const uint8_t* data, int length) {
     } else if (header.type == MessageType::MastermindRequestState) {
         processMastermindStateRequest(address, data, length);
     }
+    xSemaphoreGive(protocolMutex);
 }
 
 bool startEspNow() {
@@ -1035,16 +1080,6 @@ void sendHeartbeat() {
                  sizeof(packet));
 }
 
-void sendState(MessageType type, const PuzzleState& state) {
-    PuzzleStatePacket packet{makeHeader(type), state};
-    const esp_err_t result = esp_now_send(
-        expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet), sizeof(packet));
-    Serial.printf("TX %s game=%lu revision=%lu result=%d\n",
-                  type == MessageType::FullState ? "full" : "move",
-                  static_cast<unsigned long>(state.gameId),
-                  static_cast<unsigned long>(state.revision), result);
-}
-
 void sendAck(const PendingAck& ack) {
     PuzzleAckPacket packet{makeHeader(MessageType::PuzzleAck),
                            ack.targetBoardId,
@@ -1074,10 +1109,57 @@ void sendStateRequest() {
                  sizeof(packet));
 }
 
-void sendMastermindState(MessageType type, const MastermindState& state) {
+void sendPuzzleStateIfCurrent(MessageType type, const PuzzleState& state) {
+    PuzzleStatePacket packet{makeHeader(type), state};
+    if (protocolMutex == nullptr ||
+        xSemaphoreTake(protocolMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    portENTER_CRITICAL(&gameMux);
+    const bool snapshotMatches =
+        stateReady && memcmp(&puzzleState, &state, sizeof(state)) == 0;
+    const bool shouldSend =
+        shouldSendActiveGameState(activeGame, ActiveGameKind::Puzzle,
+                                  state.gameId, snapshotMatches);
+    portEXIT_CRITICAL(&gameMux);
+    esp_err_t result = ESP_ERR_INVALID_STATE;
+    if (shouldSend) {
+        result = esp_now_send(expectedPeerAddress,
+                              reinterpret_cast<uint8_t*>(&packet),
+                              sizeof(packet));
+    }
+    xSemaphoreGive(protocolMutex);
+    if (shouldSend) {
+        Serial.printf("TX %s game=%lu revision=%lu result=%d\n",
+                      type == MessageType::FullState ? "full" : "move",
+                      static_cast<unsigned long>(state.gameId),
+                      static_cast<unsigned long>(state.revision), result);
+    }
+}
+
+void sendMastermindStateIfCurrent(MessageType type,
+                                  const MastermindState& state) {
     GameStatePacket packet{makeHeader(type), state};
-    esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
-                 sizeof(packet));
+    if (protocolMutex == nullptr ||
+        xSemaphoreTake(protocolMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    portENTER_CRITICAL(&gameMux);
+    const bool snapshotMatches =
+        mastermindStateReady && sameMastermindState(mastermindState, state);
+    const bool terminalDelivery =
+        type == MessageType::MastermindState &&
+        state.phase == MastermindPhase::Exited;
+    const bool shouldSend =
+        shouldSendActiveGameState(activeGame, ActiveGameKind::Mastermind,
+                                  state.gameId, snapshotMatches,
+                                  terminalDelivery);
+    portEXIT_CRITICAL(&gameMux);
+    if (shouldSend) {
+        esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
+                     sizeof(packet));
+    }
+    xSemaphoreGive(protocolMutex);
 }
 
 void sendMastermindAck(const MastermindPendingAck& ack) {
@@ -1163,14 +1245,27 @@ int8_t puzzlePositionAt(int16_t x, int16_t y) {
 void startPuzzle() {
     PuzzleState started{};
     portENTER_CRITICAL(&gameMux);
-    const uint32_t nextGameId = stateReady ? puzzleState.gameId + 1 : 1;
+    if (activeGame.kind != ActiveGameKind::Home) {
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
+    const uint32_t nextGameId = nextActiveGameEpoch(
+        activeGame.epoch, stateReady ? puzzleState.gameId : 0,
+        mastermindStateReady ? mastermindState.gameId : 0);
+    if (nextGameId == kNoActiveGameEpoch) {
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
     started = makeScrambledPuzzle(std::min(boardId, gamePeerBoardId),
                                   nextGameId);
     puzzleState = started;
     stateReady = true;
+    activeGame = {nextGameId, ActiveGameKind::Puzzle};
     screenMode = ScreenMode::Puzzle;
     mastermindPendingDelivery.active = false;
     mastermindReconciliationPending = false;
+    mastermindRequestStateSoon = false;
+    sendMastermindFullStateSoon = false;
     pendingDelivery =
         PendingDelivery{true, MessageType::FullState, started, 0};
     displayDirty = true;
@@ -1179,29 +1274,59 @@ void startPuzzle() {
                   static_cast<unsigned long>(started.gameId));
 }
 
-void commitMastermindState(const MastermindState& next, MessageType type) {
+bool commitMastermindState(const MastermindState& next, MessageType type,
+                           const MastermindState* expected = nullptr) {
     portENTER_CRITICAL(&gameMux);
+    if ((expected != nullptr &&
+         (activeGame.kind != ActiveGameKind::Mastermind ||
+          !mastermindStateReady ||
+          !sameMastermindState(mastermindState, *expected))) ||
+        (expected == nullptr &&
+         (activeGame.kind != ActiveGameKind::Home ||
+          next.gameId <= activeGame.epoch))) {
+        portEXIT_CRITICAL(&gameMux);
+        return false;
+    }
     mastermindState = next;
     mastermindStateReady = true;
+    activeGame = {
+        next.gameId,
+        next.phase == MastermindPhase::Exited ? ActiveGameKind::Home
+                                               : ActiveGameKind::Mastermind,
+    };
     screenMode = next.phase == MastermindPhase::Exited
                      ? ScreenMode::Home
                      : ScreenMode::Mastermind;
     pendingDelivery.active = false;
     reconciliationPending = false;
+    requestStateSoon = false;
+    sendFullStateSoon = false;
+    sendMastermindFullStateSoon = false;
     mastermindPendingDelivery =
         MastermindPendingDelivery{true, type, next, 0};
     noteMastermindPhase(next);
     displayDirty = true;
     portEXIT_CRITICAL(&gameMux);
+    return true;
 }
 
 void startMastermind() {
-    const uint32_t nextGameId =
-        mastermindStateReady ? mastermindState.gameId + 1 : 1;
+    uint32_t nextGameId = kNoActiveGameEpoch;
+    portENTER_CRITICAL(&gameMux);
+    nextGameId = nextActiveGameEpoch(
+        activeGame.epoch, stateReady ? puzzleState.gameId : 0,
+        mastermindStateReady ? mastermindState.gameId : 0);
+    portEXIT_CRITICAL(&gameMux);
+    if (nextGameId == kNoActiveGameEpoch) {
+        return;
+    }
     const MastermindState started = makeMastermindMatch(
         std::min(boardId, gamePeerBoardId),
         std::max(boardId, gamePeerBoardId), nextGameId);
-    commitMastermindState(started, MessageType::MastermindFullState);
+    if (!commitMastermindState(started,
+                               MessageType::MastermindFullState)) {
+        return;
+    }
     Serial.printf("MASTERMIND started id=%lu\n",
                   static_cast<unsigned long>(started.gameId));
 }
@@ -1253,7 +1378,8 @@ void handleMastermindTouch(int16_t x, int16_t y) {
     if (mastermindStateReady && x >= 270 && y <= 34) {
         MastermindState exited = snapshot;
         if (exitMastermindMatch(exited, boardId)) {
-            commitMastermindState(exited, MessageType::MastermindState);
+            commitMastermindState(exited, MessageType::MastermindState,
+                                  &snapshot);
         }
         return;
     }
@@ -1267,7 +1393,8 @@ void handleMastermindTouch(int16_t x, int16_t y) {
         if (x >= 95 && x <= 225 && y >= 181 && y <= 223) {
             MastermindState next = snapshot;
             if (submitMastermindSecret(next, draftCode, boardId)) {
-                commitMastermindState(next, MessageType::MastermindState);
+                commitMastermindState(next, MessageType::MastermindState,
+                                      &snapshot);
             }
         }
     } else if (snapshot.phase == MastermindPhase::Guessing &&
@@ -1276,7 +1403,8 @@ void handleMastermindTouch(int16_t x, int16_t y) {
         if (x >= 211 && x <= 303 && y >= 185 && y <= 224) {
             MastermindState next = snapshot;
             if (submitMastermindGuess(next, draftCode, boardId)) {
-                commitMastermindState(next, MessageType::MastermindState);
+                commitMastermindState(next, MessageType::MastermindState,
+                                      &snapshot);
             }
         }
     }
@@ -1330,7 +1458,7 @@ void handleTouch() {
     bool accepted = false;
     uint8_t tile = 0;
     portENTER_CRITICAL(&gameMux);
-    if (stateReady) {
+    if (stateReady && activeGame.kind == ActiveGameKind::Puzzle) {
         tile = puzzleState.tiles[position];
         accepted = tryPuzzleMove(puzzleState, position, boardId,
                                  gamePeerBoardId);
@@ -1377,6 +1505,10 @@ void serviceProtocol(uint32_t now) {
     bool sendMastermindFullNow = false;
     bool requestMastermindNow = false;
     portENTER_CRITICAL(&gameMux);
+    const bool puzzleActive = activeGame.kind == ActiveGameKind::Puzzle;
+    const bool mastermindActive =
+        activeGame.kind == ActiveGameKind::Mastermind;
+    const bool discoveringGame = activeGame.kind == ActiveGameKind::Home;
     if (pendingDelivery.active &&
         now - pendingDelivery.lastSentMs >= kDeliveryRetryMs) {
         pendingDelivery.lastSentMs = now;
@@ -1388,14 +1520,15 @@ void serviceProtocol(uint32_t now) {
         pendingAck.active = false;
         sendAckNow = true;
     }
-    if (sendFullStateSoon && stateReady) {
+    if (sendFullStateSoon && stateReady && puzzleActive) {
         sendFullStateSoon = false;
         fullState = puzzleState;
         sendFullNow = true;
     }
-    if (requestStateSoon ||
-        (gamePeerBoardId != 0 && (!stateReady || reconciliationPending) &&
-         now - lastStateRequestMs >= kStateRequestIntervalMs)) {
+    if ((puzzleActive || discoveringGame) &&
+        (requestStateSoon ||
+         (gamePeerBoardId != 0 && (!stateReady || reconciliationPending) &&
+          now - lastStateRequestMs >= kStateRequestIntervalMs))) {
         requestStateSoon = false;
         requestNow = true;
     }
@@ -1410,15 +1543,17 @@ void serviceProtocol(uint32_t now) {
         mastermindPendingAck.active = false;
         sendMastermindAckNow = true;
     }
-    if (sendMastermindFullStateSoon && mastermindStateReady) {
+    if (sendMastermindFullStateSoon && mastermindStateReady &&
+        mastermindActive) {
         sendMastermindFullStateSoon = false;
         mastermindFullState = mastermindState;
         sendMastermindFullNow = true;
     }
-    if (mastermindRequestStateSoon ||
-        (gamePeerBoardId != 0 &&
-         (!mastermindStateReady || mastermindReconciliationPending) &&
-         now - lastStateRequestMs >= kStateRequestIntervalMs)) {
+    if ((mastermindActive || discoveringGame) &&
+        (mastermindRequestStateSoon ||
+         (gamePeerBoardId != 0 &&
+          (!mastermindStateReady || mastermindReconciliationPending) &&
+          now - lastStateRequestMs >= kStateRequestIntervalMs))) {
         mastermindRequestStateSoon = false;
         requestMastermindNow = true;
     }
@@ -1428,27 +1563,27 @@ void serviceProtocol(uint32_t now) {
     portEXIT_CRITICAL(&gameMux);
 
     if (sendDelivery) {
-        sendState(delivery.type, delivery.state);
+        sendPuzzleStateIfCurrent(delivery.type, delivery.state);
     }
     if (sendAckNow) {
         sendAck(ack);
     }
     if (sendFullNow) {
-        sendState(MessageType::FullState, fullState);
+        sendPuzzleStateIfCurrent(MessageType::FullState, fullState);
     }
     if (requestNow) {
         sendStateRequest();
     }
     if (sendMastermindDeliveryNow) {
-        sendMastermindState(mastermindDelivery.type,
-                            mastermindDelivery.state);
+        sendMastermindStateIfCurrent(mastermindDelivery.type,
+                                     mastermindDelivery.state);
     }
     if (sendMastermindAckNow) {
         sendMastermindAck(mastermindAck);
     }
     if (sendMastermindFullNow) {
-        sendMastermindState(MessageType::MastermindFullState,
-                            mastermindFullState);
+        sendMastermindStateIfCurrent(MessageType::MastermindFullState,
+                                     mastermindFullState);
     }
     if (requestMastermindNow) {
         sendMastermindStateRequest();
@@ -1466,8 +1601,10 @@ void advanceMastermindRoundIfReady(uint32_t now) {
         !mastermindPendingDelivery.active && mastermindCompletedAtMs != 0 &&
         now - mastermindCompletedAtMs >= kMastermindCompleteDisplayMs;
     portEXIT_CRITICAL(&gameMux);
+    const MastermindState expected = snapshot;
     if (shouldAdvance && advanceMastermindRound(snapshot, boardId)) {
-        commitMastermindState(snapshot, MessageType::MastermindState);
+        commitMastermindState(snapshot, MessageType::MastermindState,
+                              &expected);
     }
 }
 }  // namespace
@@ -1488,7 +1625,8 @@ void setup() {
         bootSessionId = esp_random();
     } while (bootSessionId == 0);
     lastEspNowAttemptMs = millis();
-    espNowReady = startEspNow();
+    protocolMutex = xSemaphoreCreateMutex();
+    espNowReady = protocolMutex != nullptr && startEspNow();
     Serial.printf("TWO-PLAYER GAMES ready mac=%s id=%08lX esp-now=%s\n",
                   WiFi.macAddress().c_str(),
                   static_cast<unsigned long>(boardId),
@@ -1531,9 +1669,15 @@ void loop() {
     uint32_t fullRevision = 0;
     portENTER_CRITICAL(&gameMux);
     if (screenMode == ScreenMode::Complete && completedAtMs != 0 &&
-        now - completedAtMs >= kCompleteDisplayMs) {
+        now - completedAtMs >= kCompleteDisplayMs &&
+        canReturnCompletedGameHome(activeGame, ActiveGameKind::Puzzle,
+                                   pendingDelivery.active)) {
         screenMode = ScreenMode::Home;
+        activeGame.kind = ActiveGameKind::Home;
         completedAtMs = 0;
+        sendFullStateSoon = false;
+        requestStateSoon = false;
+        reconciliationPending = false;
         displayDirty = true;
     }
     shouldRender = displayDirty;

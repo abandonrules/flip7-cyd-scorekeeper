@@ -46,6 +46,19 @@ pio run
 
 Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-only keys because CI firmware is not installed on the physical pair.
 
+### Security and recovery model
+
+The fixed encrypted CYDs are trusted game appliances. Mastermind hides the
+codemaker's secret from the codebreaker's UI, but synchronizes the encrypted
+full state so either trusted board can recover the round after the other board
+restarts. This is not intended to resist physical extraction or modified
+firmware on one of the paired boards.
+
+Game state is currently volatile: one board can restart and reconcile from the
+surviving peer, while restarting both boards returns the pair to the game menu.
+Receiver-restart replay hardening is tracked in
+[issue #11](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/11).
+
 ## Milestones
 1. Single-board UI
 2. Local persistence
