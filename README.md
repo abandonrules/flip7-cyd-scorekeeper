@@ -32,6 +32,20 @@ pio run
 
 Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-only keys because CI firmware is not installed on the physical pair.
 
+## Sliding puzzles
+
+The paired CYDs offer two synchronized, alternating-turn layouts:
+
+- **Planet Slide:** a 3×3 eight-piece puzzle using the astronomical
+  symbols for Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and
+  Neptune.
+- **Greek Slide:** the original 4×3 eleven-piece Greek-symbol puzzle.
+
+A correctly positioned piece is visually locked by removing its colored
+background. Either player can press `EXIT` at any time, including while a move
+is still awaiting acknowledgment or the peer is temporarily offline. EXIT is
+synchronized and retried until both devices return to the selector.
+
 ## Milestones
 1. Single-board UI
 2. Local persistence
