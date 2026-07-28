@@ -509,9 +509,6 @@ void renderHome(bool online, bool deliveryPending) {
         display.drawString(online ? "WAITING FOR HOST" : "CONNECT PEER",
                            display.width() / 2, 125, 2);
     }
-    display.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
-    display.drawString("Locked pieces lose their background",
-                       display.width() / 2, 207, 2);
 }
 
 void renderPuzzle(bool online, const PuzzleState& game,
