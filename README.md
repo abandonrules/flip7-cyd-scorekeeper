@@ -61,6 +61,12 @@ python3 scripts/build_web_installer.py
 
 The generated site is written to `dist/web-installer/`. Firmware served from CI is intended for easy flashing/demo installs; the private paired devices should still be built locally with the real keys from `~/.config/flip7-cyd-scorekeeper/espnow.env`.
 
+## Power-saving
+
+The firmware shows the paired Aquarium idle screen after 30 seconds without local touch input, then turns the CYD backlight off after 60 seconds without local touch input. The ESP32 stays awake, so ESP-NOW pairing, heartbeats, pending delivery retries, and game state remain in RAM. The first touch wakes the display, redraws the current screen, and is consumed so it does not accidentally make a game move.
+
+Power-saving waits until pending synchronized game work is idle before starting the idle Aquarium or turning the backlight off.
+
 ## Companion hardware
 
 The working CircuitPython keypad program from the companion Adafruit MacroPad

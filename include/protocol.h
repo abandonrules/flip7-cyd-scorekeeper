@@ -148,7 +148,7 @@ struct AquariumFishSync {
     int8_t vx;
     int8_t vy;
     uint8_t glyph;
-    uint8_t reserved;
+    uint8_t hunger;
 };
 
 struct AquariumSyncPacket {
