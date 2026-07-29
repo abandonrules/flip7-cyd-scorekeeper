@@ -33,7 +33,6 @@ constexpr uint32_t kEspNowRetryMs = 2000;
 constexpr uint32_t kDeliveryRetryMs = 300;
 constexpr uint32_t kStateRequestIntervalMs = 1000;
 constexpr uint32_t kPeerTimeoutMs = 3000;
-constexpr uint32_t kCompleteDisplayMs = 2000;
 constexpr uint32_t kMastermindCompleteDisplayMs = 3000;
 constexpr uint32_t kPeriodicLockFlashMs = 750;
 constexpr uint8_t kNoPuzzlePosition = UINT8_MAX;
@@ -57,6 +56,10 @@ constexpr int16_t kExitX = 271;
 constexpr int16_t kExitY = 3;
 constexpr int16_t kExitWidth = 46;
 constexpr int16_t kExitHeight = 26;
+constexpr int16_t kGreatJobX = 58;
+constexpr int16_t kGreatJobY = 181;
+constexpr int16_t kGreatJobWidth = 204;
+constexpr int16_t kGreatJobHeight = 43;
 
 struct PuzzleLayout {
     int16_t x;
@@ -144,7 +147,6 @@ uint32_t nextSequence = 1;
 uint32_t lastHeartbeatMs = 0;
 uint32_t lastEspNowAttemptMs = 0;
 uint32_t lastStateRequestMs = 0;
-uint32_t completedAtMs = 0;
 uint32_t periodicLockFlashUntilMs = 0;
 uint32_t mastermindCompletedAtMs = 0;
 uint8_t periodicLockFlashPosition = kNoPuzzlePosition;
@@ -976,7 +978,7 @@ void renderComplete(bool online, const PuzzleState& game) {
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_GREEN, TFT_NAVY);
-    display.drawString("PUZZLE COMPLETE!", display.width() / 2, 96, 4);
+    display.drawString("GREAT JOB!", display.width() / 2, 73, 4);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
     const char* message = "All Greek symbols are home";
     if (game.theme == PuzzleTheme::Planets) {
@@ -984,7 +986,20 @@ void renderComplete(bool online, const PuzzleState& game) {
     } else if (game.theme == PuzzleTheme::Elements) {
         message = "Elements are in atomic order";
     }
-    display.drawString(message, display.width() / 2, 138, 2);
+    display.drawString(message, display.width() / 2, 116, 2);
+    char turnCount[24];
+    snprintf(turnCount, sizeof(turnCount), "Solved in %lu turns",
+             static_cast<unsigned long>(game.revision));
+    display.setTextColor(TFT_CYAN, TFT_NAVY);
+    display.drawString(turnCount, display.width() / 2, 145, 2);
+
+    display.fillRoundRect(kGreatJobX, kGreatJobY, kGreatJobWidth,
+                          kGreatJobHeight, 8, TFT_GREEN);
+    display.drawRoundRect(kGreatJobX, kGreatJobY, kGreatJobWidth,
+                          kGreatJobHeight, 8, TFT_WHITE);
+    display.setTextColor(TFT_BLACK, TFT_GREEN);
+    display.drawString("GREAT JOB", display.width() / 2,
+                       kGreatJobY + kGreatJobHeight / 2, 4);
     renderExitButton(online);
 }
 
@@ -1232,7 +1247,6 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
         reconciliationPending = false;
         sendFullStateSoon = !terminalConverged;
         screenMode = ScreenMode::Home;
-        completedAtMs = 0;
         displayDirty = true;
         accepted = true;
     } else if (validTurnId && type == MessageType::FullState) {
@@ -1260,10 +1274,8 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
             reconciliationPending = false;
             if (puzzleState.phase == PuzzlePhase::Exited) {
                 screenMode = ScreenMode::Home;
-                completedAtMs = 0;
             } else if (isPuzzleSolved(puzzleState)) {
                 screenMode = ScreenMode::Complete;
-                completedAtMs = millis();
             } else {
                 screenMode = ScreenMode::Puzzle;
             }
@@ -1315,9 +1327,6 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
             reconciliationPending = false;
             screenMode = isPuzzleSolved(puzzleState) ? ScreenMode::Complete
                                                       : ScreenMode::Puzzle;
-            if (screenMode == ScreenMode::Complete) {
-                completedAtMs = millis();
-            }
             if (hadPrevious) {
                 notePeriodicLockFlash(previous, puzzleState, millis());
             }
@@ -2219,8 +2228,11 @@ void handleTouch(uint32_t now) {
     const bool exitPressed =
         x >= kExitX && x < kExitX + kExitWidth && y >= kExitY &&
         y < kExitY + kExitHeight;
+    const bool greatJobPressed =
+        x >= kGreatJobX && x < kGreatJobX + kGreatJobWidth &&
+        y >= kGreatJobY && y < kGreatJobY + kGreatJobHeight;
     if ((mode == ScreenMode::Puzzle || mode == ScreenMode::Complete) &&
-        exitPressed) {
+        (exitPressed || (mode == ScreenMode::Complete && greatJobPressed))) {
         PuzzleState exited{};
         bool accepted = false;
         portENTER_CRITICAL(&gameMux);
@@ -2233,7 +2245,6 @@ void handleTouch(uint32_t now) {
                     true, MessageType::PuzzleState, exited, 0};
                 screenMode = ScreenMode::Home;
                 activeGame = {exited.gameId, ActiveGameKind::Home};
-                completedAtMs = 0;
                 reconciliationPending = false;
                 displayDirty = true;
             }
@@ -2323,7 +2334,6 @@ void handleTouch(uint32_t now) {
                 true, MessageType::PuzzleState, moved, 0};
             if (isPuzzleSolved(moved)) {
                 screenMode = ScreenMode::Complete;
-                completedAtMs = millis();
             }
             notePeriodicLockFlash(previous, moved, millis());
             displayDirty = true;
@@ -2530,18 +2540,6 @@ void loop() {
     uint32_t fullGameId = 0;
     uint32_t fullRevision = 0;
     portENTER_CRITICAL(&gameMux);
-    if (screenMode == ScreenMode::Complete && completedAtMs != 0 &&
-        now - completedAtMs >= kCompleteDisplayMs &&
-        canReturnCompletedGameHome(activeGame, ActiveGameKind::Puzzle,
-                                   pendingDelivery.active)) {
-        screenMode = ScreenMode::Home;
-        activeGame.kind = ActiveGameKind::Home;
-        completedAtMs = 0;
-        sendFullStateSoon = false;
-        requestStateSoon = false;
-        reconciliationPending = false;
-        displayDirty = true;
-    }
     if (periodicLockFlashUntilMs != 0 &&
         static_cast<int32_t>(now - periodicLockFlashUntilMs) >= 0) {
         periodicLockFlashUntilMs = 0;
