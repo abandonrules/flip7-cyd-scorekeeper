@@ -468,13 +468,9 @@ void drawPlanetSymbol(uint8_t planet, int16_t cx, int16_t cy,
 
 void drawElementTile(uint8_t atomicNumber, int16_t cx, int16_t cy,
                      uint16_t color, uint16_t background) {
-    char number[5];
-    snprintf(number, sizeof(number), "%u", atomicNumber);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(color, background);
-    display.drawString(periodicElementSymbol(atomicNumber), cx, cy - 8, 4);
-    display.setTextColor(TFT_LIGHTGREY, background);
-    display.drawString(number, cx, cy + 18, 2);
+    display.drawString(periodicElementSymbol(atomicNumber), cx, cy, 4);
 }
 
 uint16_t tileColor(uint8_t tile) {
