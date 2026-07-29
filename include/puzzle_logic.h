@@ -8,7 +8,59 @@ constexpr uint8_t kPuzzleMaxTiles = 30;
 enum class PuzzleTheme : uint8_t {
     Greek = 1,
     Planets,
+    Elements,
 };
+
+constexpr uint8_t kPeriodicElementCount = 118;
+constexpr uint8_t kPeriodicPuzzleElementCount = 11;
+
+inline const char* periodicElementSymbol(uint8_t atomicNumber) {
+    static const char* symbols[kPeriodicElementCount + 1] = {
+        "?",  "H",  "He", "Li", "Be", "B",  "C",  "N",  "O",  "F",
+        "Ne", "Na", "Mg", "Al", "Si", "P",  "S",  "Cl", "Ar", "K",
+        "Ca", "Sc", "Ti", "V",  "Cr", "Mn", "Fe", "Co", "Ni", "Cu",
+        "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y",
+        "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In",
+        "Sn", "Sb", "Te", "I",  "Xe", "Cs", "Ba", "La", "Ce", "Pr",
+        "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm",
+        "Yb", "Lu", "Hf", "Ta", "W",  "Re", "Os", "Ir", "Pt", "Au",
+        "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac",
+        "Th", "Pa", "U",  "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es",
+        "Fm", "Md", "No", "Lr", "Rf", "Db", "Sg", "Bh", "Hs", "Mt",
+        "Ds", "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og",
+    };
+    return atomicNumber <= kPeriodicElementCount ? symbols[atomicNumber] : "?";
+}
+
+inline uint32_t periodicNextRandom(uint32_t value) {
+    return value * 1664525u + 1013904223u;
+}
+
+inline void selectPeriodicPuzzleElements(uint32_t gameId, uint8_t* out,
+                                         uint8_t count) {
+    uint8_t pool[kPeriodicElementCount]{};
+    for (uint8_t i = 0; i < kPeriodicElementCount; ++i) {
+        pool[i] = i + 1;
+    }
+    uint32_t random = gameId ^ 0xB105F00Du;
+    for (uint8_t i = 0; i < count && i < kPeriodicElementCount; ++i) {
+        random = periodicNextRandom(random);
+        const uint8_t pick = i + random % (kPeriodicElementCount - i);
+        const uint8_t value = pool[pick];
+        pool[pick] = pool[i];
+        pool[i] = value;
+        out[i] = value;
+    }
+    for (uint8_t i = 1; i < count; ++i) {
+        uint8_t value = out[i];
+        uint8_t j = i;
+        while (j > 0 && out[j - 1] > value) {
+            out[j] = out[j - 1];
+            --j;
+        }
+        out[j] = value;
+    }
+}
 
 enum class PuzzlePhase : uint8_t {
     Playing = 1,
@@ -41,7 +93,9 @@ inline bool isSupportedPuzzleSpec(const PuzzleSpec& spec) {
     return (spec.columns == 3 && spec.rows == 3 &&
             spec.theme == PuzzleTheme::Planets) ||
            (spec.columns == 4 && spec.rows == 3 &&
-            spec.theme == PuzzleTheme::Greek);
+            spec.theme == PuzzleTheme::Greek) ||
+           (spec.columns == 4 && spec.rows == 3 &&
+            spec.theme == PuzzleTheme::Elements);
 }
 
 inline PuzzleSpec puzzleSpec(const PuzzleState& state) {
@@ -50,6 +104,17 @@ inline PuzzleSpec puzzleSpec(const PuzzleState& state) {
 
 inline uint8_t puzzleTileCount(const PuzzleState& state) {
     return static_cast<uint8_t>(state.columns * state.rows);
+}
+
+inline uint8_t periodicElementForTile(const PuzzleState& state, uint8_t tile) {
+    if (state.theme != PuzzleTheme::Elements || tile == 0 ||
+        tile > kPeriodicPuzzleElementCount) {
+        return 0;
+    }
+    uint8_t elements[kPeriodicPuzzleElementCount]{};
+    selectPeriodicPuzzleElements(state.gameId, elements,
+                                 kPeriodicPuzzleElementCount);
+    return elements[tile - 1];
 }
 
 inline PuzzleState makeInitialPuzzle(uint32_t firstTurnBoardId,

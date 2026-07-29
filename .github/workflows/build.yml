@@ -24,3 +24,5 @@ jobs:
           /tmp/puzzle_logic_test
           g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/mastermind_logic_test.cpp -o /tmp/mastermind_logic_test
           /tmp/mastermind_logic_test
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/periodic_logic_test.cpp -o /tmp/periodic_logic_test
+          /tmp/periodic_logic_test

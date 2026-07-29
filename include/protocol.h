@@ -7,7 +7,7 @@
 #include "puzzle_logic.h"
 
 constexpr uint32_t kProtocolMagic = 0x46374359;
-constexpr uint8_t kProtocolVersion = 9;
+constexpr uint8_t kProtocolVersion = 10;
 
 inline bool isSequenceNewer(uint32_t candidate, uint32_t previous) {
     return static_cast<int32_t>(candidate - previous) > 0;
