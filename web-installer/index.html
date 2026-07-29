@@ -32,7 +32,7 @@
       }
 
       main {
-        width: min(860px, calc(100% - 32px));
+        width: min(920px, calc(100% - 32px));
         margin: 0 auto;
         padding: 42px 0;
         text-align: center;
@@ -65,12 +65,39 @@
         overflow: hidden;
       }
 
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin: 24px auto 0;
+        padding: 0;
+        width: min(760px, 100%);
+        list-style: none;
+        text-align: left;
+      }
+
+      .steps li {
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgba(11, 34, 48, 0.72);
+        color: var(--quiet);
+        font-size: 15px;
+        line-height: 1.4;
+      }
+
+      .steps strong {
+        display: block;
+        margin-bottom: 6px;
+        color: var(--text);
+      }
+
       .button-grid {
         display: grid;
-        grid-template-columns: minmax(0, 1fr);
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 14px;
         margin: 26px auto 0;
-        width: min(480px, 100%);
+        width: min(760px, 100%);
       }
 
       .board-card {
@@ -124,26 +151,51 @@
       .note { margin-top: 24px; }
       .slot-message { display: block; margin-top: 10px; }
       code { color: #dcfce7; }
+
+      @media (max-width: 720px) {
+        .steps,
+        .button-grid {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
 
   <body>
     <main>
       <h1>Flip7 CYD Scorekeeper</h1>
-      <p>Flash the synchronized CYD game firmware directly from your browser.</p>
+      <p>Flash the paired CYD game firmware directly from your browser.</p>
 
       <div class="fish" aria-label="ASCII aquarium preview">   &gt;)))'&gt;     oO0
 ~ ~ ~ ~ ~ ~ ~ ~ ~
      &lt;o(((&lt;    *</div>
 
-      <section class="button-grid" aria-label="Board flash options">
+      <ol class="steps" aria-label="Pair flashing steps">
+        <li><strong>1. Flash CYD 1</strong>Connect one board with a data USB cable and flash the first slot.</li>
+        <li><strong>2. Swap boards</strong>Unplug CYD 1, plug in CYD 2, and keep this page open.</li>
+        <li><strong>3. Flash CYD 2</strong>Flash the second slot. Both boards receive the same paired firmware.</li>
+      </ol>
+
+      <section class="button-grid" aria-label="Paired board flash options">
         <article class="board-card">
           <div>
-            <h2>Standard CYD</h2>
-            <p>For the common ESP32-2432S028R Cheap Yellow Display used by the Flip7 scorekeeper pair.</p>
+            <h2>CYD 1</h2>
+            <p>Flash the first ESP32-2432S028R Cheap Yellow Display in the Flip7 scorekeeper pair.</p>
           </div>
           <esp-web-install-button manifest="manifest-cyd.json">
-            <button slot="activate">Flash Standard CYD</button>
+            <button slot="activate">Flash CYD 1</button>
+            <span class="slot-message" slot="unsupported">Use Chrome, Edge, or Firefox 151 or newer on a desktop computer with WebSerial enabled.</span>
+            <span class="slot-message" slot="not-allowed">This page needs HTTPS to flash your board.</span>
+          </esp-web-install-button>
+        </article>
+
+        <article class="board-card">
+          <div>
+            <h2>CYD 2</h2>
+            <p>After CYD 1 finishes, unplug it, connect the second board, and flash the same firmware.</p>
+          </div>
+          <esp-web-install-button manifest="manifest-cyd.json">
+            <button slot="activate">Flash CYD 2</button>
             <span class="slot-message" slot="unsupported">Use Chrome, Edge, or Firefox 151 or newer on a desktop computer with WebSerial enabled.</span>
             <span class="slot-message" slot="not-allowed">This page needs HTTPS to flash your board.</span>
           </esp-web-install-button>
@@ -151,7 +203,7 @@
       </section>
 
       <p class="note">
-        Plug in one CYD with a data USB cable, close any serial monitor, then press the flash button.
+        WebSerial flashes one connected CYD at a time. Close any serial monitor before flashing.
         Firmware built by CI uses ephemeral ESP-NOW keys; build locally with your real keys for the paired private devices.
       </p>
     </main>

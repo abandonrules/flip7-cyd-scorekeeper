@@ -59,7 +59,7 @@ pio run
 python3 scripts/build_web_installer.py
 ```
 
-The generated site is written to `dist/web-installer/`. Firmware served from CI is intended for easy flashing/demo installs; the private paired devices should still be built locally with the real keys from `~/.config/flip7-cyd-scorekeeper/espnow.env`.
+The generated site is written to `dist/web-installer/`. The browser flasher is pair-oriented: flash one CYD, unplug it, plug in the second CYD, then flash again with the same manifest. Firmware served from CI is intended for easy flashing/demo installs; the private paired devices should still be built locally with the real keys from `~/.config/flip7-cyd-scorekeeper/espnow.env`.
 
 ## Power-saving
 
