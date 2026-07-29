@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Flip7 CYD Scorekeeper Flasher</title>
+    <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #06151f;
+        --panel: #0b2230;
+        --panel-soft: #102d3d;
+        --text: #ffffff;
+        --muted: #b8d7e6;
+        --quiet: #8fb6c9;
+        --accent: #20c997;
+        --accent-dark: #041011;
+        --border: rgba(184, 215, 230, 0.22);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 20% 0%, rgba(32, 201, 151, 0.18), transparent 28rem),
+          linear-gradient(180deg, #082438 0%, var(--bg) 58%, #02070a 100%);
+        color: var(--text);
+        font-family: Arial, sans-serif;
+      }
+
+      main {
+        width: min(860px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 42px 0;
+        text-align: center;
+      }
+
+      h1 {
+        font-size: clamp(32px, 7vw, 54px);
+        line-height: 1.02;
+        margin: 0 0 10px;
+      }
+
+      p {
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1.5;
+        margin: 0;
+      }
+
+      .fish {
+        margin: 28px auto;
+        padding: 22px;
+        width: min(540px, 100%);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: linear-gradient(180deg, #0019aa 0%, #000b46 42%, #000000 100%);
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
+        color: #65f0ff;
+        font: 700 clamp(18px, 4vw, 30px) / 1.5 monospace;
+        white-space: pre;
+        overflow: hidden;
+      }
+
+      .button-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 14px;
+        margin: 26px auto 0;
+        width: min(480px, 100%);
+      }
+
+      .board-card {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        gap: 18px;
+        padding: 20px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: var(--panel);
+        text-align: left;
+      }
+
+      .board-card h2 {
+        margin: 0 0 8px;
+        font-size: 24px;
+        line-height: 1.2;
+      }
+
+      .board-card p {
+        color: var(--quiet);
+        font-size: 15px;
+      }
+
+      button {
+        width: 100%;
+        min-height: 50px;
+        padding: 13px 16px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: var(--accent-dark);
+        font-size: 17px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        background: var(--panel-soft);
+        color: var(--quiet);
+        cursor: not-allowed;
+      }
+
+      .note, .slot-message {
+        color: var(--quiet);
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .note { margin-top: 24px; }
+      .slot-message { display: block; margin-top: 10px; }
+      code { color: #dcfce7; }
+    </style>
+  </head>
+
+  <body>
+    <main>
+      <h1>Flip7 CYD Scorekeeper</h1>
+      <p>Flash the synchronized CYD game firmware directly from your browser.</p>
+
+      <div class="fish" aria-label="ASCII aquarium preview">   &gt;)))'&gt;     oO0
+~ ~ ~ ~ ~ ~ ~ ~ ~
+     &lt;o(((&lt;    *</div>
+
+      <section class="button-grid" aria-label="Board flash options">
+        <article class="board-card">
+          <div>
+            <h2>Standard CYD</h2>
+            <p>For the common ESP32-2432S028R Cheap Yellow Display used by the Flip7 scorekeeper pair.</p>
+          </div>
+          <esp-web-install-button manifest="manifest-cyd.json">
+            <button slot="activate">Flash Standard CYD</button>
+            <span class="slot-message" slot="unsupported">Use Chrome, Edge, or Firefox 151 or newer on a desktop computer with WebSerial enabled.</span>
+            <span class="slot-message" slot="not-allowed">This page needs HTTPS to flash your board.</span>
+          </esp-web-install-button>
+        </article>
+      </section>
+
+      <p class="note">
+        Plug in one CYD with a data USB cable, close any serial monitor, then press the flash button.
+        Firmware built by CI uses ephemeral ESP-NOW keys; build locally with your real keys for the paired private devices.
+      </p>
+    </main>
+  </body>
+</html>

@@ -46,6 +46,21 @@ pio run
 
 Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-only keys because CI firmware is not installed on the physical pair.
 
+## Browser flasher
+
+This repository includes a GitHub Pages/WebSerial installer modeled after the ASCII Aquarium browser flasher. The installer source lives in [`web-installer/`](web-installer/) and the publishing workflow is [`pages.yml`](.github/workflows/pages.yml).
+
+The Pages workflow builds the CYD firmware with ephemeral ESP-NOW keys, merges the ESP32 bootloader/partition/app images into a single browser-flashable binary, and publishes an `esp-web-tools` manifest plus installer page.
+
+To build the same installer artifact locally after setting your ESP-NOW key environment:
+
+```sh
+pio run
+python3 scripts/build_web_installer.py
+```
+
+The generated site is written to `dist/web-installer/`. Firmware served from CI is intended for easy flashing/demo installs; the private paired devices should still be built locally with the real keys from `~/.config/flip7-cyd-scorekeeper/espnow.env`.
+
 ## Companion hardware
 
 The working CircuitPython keypad program from the companion Adafruit MacroPad
