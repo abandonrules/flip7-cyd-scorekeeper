@@ -1,31 +1,73 @@
 # Flip7 CYD Scorekeeper
 
-A collection of synchronized two-player games for a fixed pair of
-ESP32-2432S028 (Cheap Yellow Display) boards.
+Synchronized two-player games for a fixed pair of ESP32-2432S028R
+Cheap Yellow Display boards. The boards talk directly over encrypted ESP-NOW,
+so the pair works offline with no router, phone, or web service once flashed.
 
-## Games
+Live browser flasher:
+https://abandonrules.github.io/flip7-cyd-scorekeeper/
 
-- **Greek Slide** — a shared 4×3 sliding puzzle with alternating turns.
-- **Mastermind** — one device privately enters a four-color code and the
-  other gets ten duplicate-aware guesses. Roles swap automatically after
-  every round and the match score persists between rounds.
+## Current firmware
 
-The host chooses a game from the home screen. Mastermind uses six colors,
-allows repeated colors, reports exact-position (`E`) and color-only (`C`)
-matches, and reveals the secret when the round ends.
-Both players have an `EXIT` button in landscape mode; either device can use
-it to return the synchronized pair to the game-selection screen.
+The active integration branch is `feat/greek-slide-planets-rebased`.
+It currently ships:
 
-## Goals
-- Two synchronized touchscreen scorekeepers
-- ESP-NOW networking
-- Offline operation
-- Save/restore games
-- Future web dashboard
+- **Planet Slide** — a synchronized 3×3 sliding puzzle using planet symbols.
+- **Greek Slide** — a synchronized 4×3 sliding puzzle using Greek symbols.
+- **Mastermind** — a two-player codebreaker match with four pegs, six colors,
+  duplicate-aware feedback, ten guesses, automatic role swaps, and match score.
+- **Aquarium** — a shared idle/waiting screen with synced fish, feeding, hunger,
+  and peer synchronization.
 
-## ESP-NOW peer keys
+The host board starts games from Home when the peer is online. Both boards have
+an `EXIT` path back to Home for synchronized games; EXIT is retried while a peer
+is temporarily offline so the pair converges when the link returns.
 
-The paired boards use encrypted unicast ESP-NOW. Provision one PMK/LMK pair outside the repository and use the same pair for both firmware uploads:
+## Hardware
+
+Tested target:
+
+- Two ESP32-2432S028R Cheap Yellow Display boards
+- ILI9341 TFT over HSPI
+- XPT2046 touch controller
+- USB data cables for flashing and serial logs
+
+PlatformIO environment: `cyd` in [`platformio.ini`](platformio.ini).
+
+## Browser flashing
+
+Use the published GitHub Pages installer for demo/easy flashing:
+
+https://abandonrules.github.io/flip7-cyd-scorekeeper/
+
+The page is pair-oriented:
+
+1. Connect CYD 1 with a data USB cable and press `Flash CYD 1`.
+2. Unplug CYD 1, plug in CYD 2, and keep the page open.
+3. Press `Flash CYD 2`.
+
+Both buttons use the same `manifest-cyd.json` firmware manifest. WebSerial can
+flash only one connected board at a time.
+
+Important: firmware built by CI uses ephemeral build-only ESP-NOW keys. That is
+fine for a public/demo flasher, but the private paired devices should be built
+locally with your real shared keys.
+
+The Pages workflow is [`pages.yml`](.github/workflows/pages.yml). It builds the
+firmware, merges the ESP32 bootloader/partition/boot_app0/app images into one
+offset-0 browser-flashable binary, and publishes `dist/web-installer/`.
+
+To generate the same site locally after `pio run`:
+
+```sh
+python3 scripts/build_web_installer.py
+```
+
+Generated output is written to `dist/web-installer/` and is ignored by git.
+
+## Local build and upload
+
+Install PlatformIO, then provision one PMK/LMK pair outside the repository:
 
 ```sh
 mkdir -p ~/.config/flip7-cyd-scorekeeper
@@ -40,68 +82,100 @@ path.write_text(
 )
 os.chmod(path, 0o600)
 PY
+```
+
+Build with the shared keys loaded:
+
+```sh
 source ~/.config/flip7-cyd-scorekeeper/espnow.env
 pio run
 ```
 
-Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-only keys because CI firmware is not installed on the physical pair.
-
-## Browser flasher
-
-This repository includes a GitHub Pages/WebSerial installer modeled after the ASCII Aquarium browser flasher. The installer source lives in [`web-installer/`](web-installer/) and the publishing workflow is [`pages.yml`](.github/workflows/pages.yml).
-
-The Pages workflow builds the CYD firmware with ephemeral ESP-NOW keys, merges the ESP32 bootloader/partition/app images into a single browser-flashable binary, and publishes an `esp-web-tools` manifest plus installer page.
-
-To build the same installer artifact locally after setting your ESP-NOW key environment:
+Upload to each board by serial port:
 
 ```sh
-pio run
-python3 scripts/build_web_installer.py
+source ~/.config/flip7-cyd-scorekeeper/espnow.env
+pio run --target upload --upload-port /dev/serial/by-path/<first-cyd>
+pio run --target upload --upload-port /dev/serial/by-path/<second-cyd>
 ```
 
-The generated site is written to `dist/web-installer/`. The browser flasher is pair-oriented: flash one CYD, unplug it, plug in the second CYD, then flash again with the same manifest. Firmware served from CI is intended for easy flashing/demo installs; the private paired devices should still be built locally with the real keys from `~/.config/flip7-cyd-scorekeeper/espnow.env`.
+Do not commit `espnow.env` or disclose its values. CI intentionally generates
+ephemeral keys because CI artifacts are not the private paired-device build.
 
-## Power-saving
+## Power saving and waiting screens
 
-The firmware shows the paired Aquarium idle screen after 30 seconds without local touch input, then turns the CYD backlight off after 60 seconds without local touch input. The ESP32 stays awake, so ESP-NOW pairing, heartbeats, pending delivery retries, and game state remain in RAM. The first touch wakes the display, redraws the current screen, and is consumed so it does not accidentally make a game move.
+The firmware tracks local touch activity:
 
-Power-saving waits until pending synchronized game work is idle before starting the idle Aquarium or turning the backlight off.
+- after 30 seconds idle, the pair enters the Aquarium idle screen;
+- after 60 seconds idle, the CYD backlight turns off;
+- ESP-NOW remains active, so heartbeats, retries, and in-RAM game state survive;
+- the first touch wakes the screen and is consumed so it does not accidentally
+  make a game move.
 
-## Companion hardware
+Power-saving waits for pending synchronized game work to become idle before
+starting Aquarium or turning off the backlight.
 
-The working CircuitPython keypad program from the companion Adafruit MacroPad
-RP2040 is preserved under [`macropad/keypad/`](macropad/keypad/README.md),
-including the exact deployed library set and restore instructions.
+When boards are waiting for a peer or host, Aquarium is used as the waiting
+screen. It is feedable and syncs fish when the peer is available.
 
-## Sliding puzzles
+## Synchronization model
 
-The paired CYDs offer two synchronized, alternating-turn layouts:
-
-- **Planet Slide:** a 3×3 eight-piece puzzle using the astronomical
-  symbols for Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and
-  Neptune.
-- **Greek Slide:** the original 4×3 eleven-piece Greek-symbol puzzle.
-
-A correctly positioned piece is visually locked by removing its colored
-background. Either player can press `EXIT` at any time, including while a move
-is still awaiting acknowledgment or the peer is temporarily offline. EXIT is
-synchronized and retried until both devices return to the selector.
-
-### Security and recovery model
+- ESP-NOW packets use a project wire protocol in [`include/protocol.h`](include/protocol.h).
+- Puzzle and Mastermind game state carry game/revision counters and ACK/retry
+  flows so interrupted delivery can converge.
+- The host owns authoritative game starts and full-state reconciliation.
+- Aquarium uses event and sync packets for start/exit/food/fish snapshots.
+- Receiver restart replay hardening is still tracked in
+  [issue #11](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/11).
 
 The fixed encrypted CYDs are trusted game appliances. Mastermind hides the
-codemaker's secret from the codebreaker's UI, but synchronizes the encrypted
-full state so either trusted board can recover the round after the other board
+codemaker's secret from the codebreaker's UI, but synchronizes encrypted full
+state so either trusted board can recover a round after the other board
 restarts. This is not intended to resist physical extraction or modified
-firmware on one of the paired boards.
+firmware on one paired board.
 
 Game state is currently volatile: one board can restart and reconcile from the
-surviving peer, while restarting both boards returns the pair to the game menu.
-Receiver-restart replay hardening is tracked in
-[issue #11](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/11).
+surviving peer, while restarting both boards returns the pair to Home.
 
-## Milestones
-1. Single-board UI
-2. Local persistence
-3. ESP-NOW sync
-4. Polish
+## Tests and verification
+
+The GitHub Actions build workflow runs PlatformIO and host-side C++ logic tests.
+For a local check:
+
+```sh
+source ~/.config/flip7-cyd-scorekeeper/espnow.env
+pio run
+
+g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/puzzle_logic_test.cpp -o /tmp/puzzle_logic_test && /tmp/puzzle_logic_test
+g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/mastermind_logic_test.cpp -o /tmp/mastermind_logic_test && /tmp/mastermind_logic_test
+g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/power_save_logic_test.cpp -o /tmp/power_save_logic_test && /tmp/power_save_logic_test
+g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/aquarium_logic_test.cpp -o /tmp/aquarium_logic_test && /tmp/aquarium_logic_test
+```
+
+Hardware-ready changes should also be flashed to both CYDs and visually checked
+on the real displays.
+
+## Repository layout
+
+- [`src/main.cpp`](src/main.cpp) — firmware UI, touch handling, ESP-NOW runtime,
+  game dispatch, Aquarium, and power-save integration.
+- [`include/`](include/) — pure game/protocol/power-save logic used by firmware
+  and host-side tests.
+- [`test/`](test/) — small host-side C++ logic tests.
+- [`scripts/configure_peer_keys.py`](scripts/configure_peer_keys.py) — injects
+  ESP-NOW keys into the PlatformIO build.
+- [`scripts/build_web_installer.py`](scripts/build_web_installer.py) — builds
+  the GitHub Pages/WebSerial installer artifact.
+- [`web-installer/`](web-installer/) — source HTML for the browser flasher.
+- [`macropad/keypad/`](macropad/keypad/README.md) — preserved CircuitPython
+  keypad companion program and deployed library notes.
+
+## Open follow-up work
+
+Notable open issues:
+
+- [#28 Periodic table atomic-number ordering puzzle](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/28)
+- [#23 Mastermind guesser screen redesign](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/23)
+- [#11 Harden ESP-NOW replay protection across receiver restarts](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/11)
+
+See the GitHub issue tracker for the full backlog.
