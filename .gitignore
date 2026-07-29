@@ -1,3 +1,5 @@
 .pio/
 .vscode/
 build/
+dist/
+ASCII-Aquarium/
