@@ -66,13 +66,14 @@ constexpr uint16_t kMastermindColors[kMastermindColorCount + 1] = {
     TFT_GREEN, TFT_CYAN, TFT_MAGENTA,
 };
 TFT_eSPI display;
+TFT_eSprite aquariumSprite(&display);
 SPIClass touchSpi(VSPI);
 XPT2046_Touchscreen touch(kTouchCsPin, kTouchIrqPin);
 portMUX_TYPE linkMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE gameMux = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t protocolMutex = nullptr;
 
-enum class ScreenMode : uint8_t { Home, Puzzle, Complete, Mastermind };
+enum class ScreenMode : uint8_t { Home, Puzzle, Complete, Mastermind, Aquarium };
 
 struct LinkState {
     uint32_t sent;
@@ -163,6 +164,38 @@ bool sendMastermindFullStateSoon = false;
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
+
+constexpr uint8_t kAquariumFishCount = kAquariumSyncFishCount;
+constexpr uint8_t kAquariumFoodCount = 8;
+constexpr uint32_t kAquariumFrameMs = 55;
+
+struct AquariumFish {
+    int16_t x;
+    int16_t y;
+    int8_t vx;
+    int8_t vy;
+    uint8_t glyph;
+    uint16_t color;
+};
+
+struct AquariumFood {
+    bool active;
+    int16_t x;
+    int16_t y;
+    uint16_t color;
+};
+
+AquariumFish aquariumFish[kAquariumFishCount]{};
+AquariumFood aquariumFood[kAquariumFoodCount]{};
+uint32_t aquariumLastFrameMs = 0;
+uint32_t aquariumEventCounter = 0;
+uint32_t aquariumLastRemoteEventId = 0;
+uint32_t aquariumSyncCounter = 0;
+uint32_t aquariumLastRemoteSyncId = 0;
+uint32_t aquariumLastSyncMs = 0;
+bool aquariumInitialized = false;
+bool aquariumSpriteReady = false;
+bool aquariumSyncSoon = false;
 
 PacketHeader makeHeader(MessageType type) {
     return PacketHeader{kProtocolMagic, kProtocolVersion, type, boardId,
@@ -467,7 +500,230 @@ void renderExitButton(bool online) {
                        kExitY + kExitHeight / 2, 2);
 }
 
+const char* aquariumGlyph(uint8_t glyph, int8_t vx) {
+    static const char* right[] = {"><>", ">)))'>", "oO0", "><(((o>", "><((((>`", ">(')>", ">'>"};
+    static const char* left[] = {"<><", "<'(((<", "0Oo", "<o(((<", "`))))><", "<(')<", "< '<"};
+    const uint8_t index = glyph % kAquariumFishCount;
+    return vx >= 0 ? right[index] : left[index];
+}
+
+void initAquarium() {
+    static const uint16_t colors[] = {TFT_GREEN, TFT_CYAN, TFT_PINK, TFT_ORANGE, TFT_YELLOW, TFT_MAGENTA, TFT_SKYBLUE};
+    for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
+        aquariumFish[i] = AquariumFish{
+            static_cast<int16_t>(20 + i * 38),
+            static_cast<int16_t>(54 + (i % 4) * 31),
+            static_cast<int8_t>((i % 2 == 0) ? 2 : -2),
+            static_cast<int8_t>((i % 3) - 1),
+            i,
+            colors[i],
+        };
+    }
+    for (AquariumFood& food : aquariumFood) {
+        food = AquariumFood{false, 0, 0, TFT_ORANGE};
+    }
+    aquariumInitialized = true;
+}
+
+void addAquariumFood(uint8_t x, uint8_t y) {
+    if (!aquariumInitialized) {
+        initAquarium();
+    }
+    for (AquariumFood& food : aquariumFood) {
+        if (!food.active) {
+            food = AquariumFood{true, static_cast<int16_t>(x),
+                                static_cast<int16_t>(y), TFT_ORANGE};
+            return;
+        }
+    }
+    aquariumFood[0] = AquariumFood{true, static_cast<int16_t>(x),
+                                   static_cast<int16_t>(y), TFT_ORANGE};
+}
+
+void nudgeAquariumFish(uint8_t fish, uint8_t x, uint8_t y) {
+    if (!aquariumInitialized) {
+        initAquarium();
+    }
+    AquariumFish& target = aquariumFish[fish % kAquariumFishCount];
+    target.vx = x >= target.x ? 3 : -3;
+    target.vy = y >= target.y ? 1 : -1;
+}
+
+void setAquariumMode(bool active) {
+    portENTER_CRITICAL(&gameMux);
+    screenMode = active ? ScreenMode::Aquarium : ScreenMode::Home;
+    displayDirty = true;
+    portEXIT_CRITICAL(&gameMux);
+}
+
+void sendAquariumSync();
+
+void stepAquarium(uint32_t now) {
+    if (!aquariumInitialized) {
+        initAquarium();
+    }
+    if (now - aquariumLastFrameMs < kAquariumFrameMs) {
+        return;
+    }
+    aquariumLastFrameMs = now;
+    for (AquariumFood& food : aquariumFood) {
+        if (food.active) {
+            food.y = std::min<int16_t>(food.y + 2, 213);
+            if (food.y >= 213) {
+                food.active = false;
+            }
+        }
+    }
+    for (AquariumFish& fish : aquariumFish) {
+        for (const AquariumFood& food : aquariumFood) {
+            if (food.active && abs(food.x - fish.x) < 70 && abs(food.y - fish.y) < 55) {
+                fish.vx = food.x >= fish.x ? 3 : -3;
+                fish.vy = food.y >= fish.y ? 1 : -1;
+                break;
+            }
+        }
+        fish.x += fish.vx;
+        fish.y += fish.vy;
+        if (fish.x < -35) {
+            fish.x = 319;
+        } else if (fish.x > 335) {
+            fish.x = -25;
+        }
+        if (fish.y < 45 || fish.y > 198) {
+            fish.vy = -fish.vy;
+            fish.y = constrain(fish.y, 45, 198);
+        }
+    }
+    const bool online = peerOnline();
+    const bool isHost = localIsHost();
+    bool shouldSendSync = false;
+    portENTER_CRITICAL(&gameMux);
+    if (screenMode == ScreenMode::Aquarium ||
+        (screenMode == ScreenMode::Home && (!online || !isHost))) {
+        displayDirty = true;
+    }
+    shouldSendSync = screenMode == ScreenMode::Aquarium && isHost && online &&
+                     (aquariumSyncSoon || now - aquariumLastSyncMs >= 250);
+    if (shouldSendSync) {
+        aquariumLastSyncMs = now;
+        aquariumSyncSoon = false;
+    }
+    portEXIT_CRITICAL(&gameMux);
+    if (shouldSendSync) {
+        sendAquariumSync();
+    }
+}
+
+
+uint8_t scaleChannel(uint8_t value, uint8_t brightness) {
+    return static_cast<uint8_t>((static_cast<uint16_t>(value) * brightness) / 255);
+}
+
+uint16_t aquariumGradientColor(int16_t y) {
+    static const uint8_t stops[] = {0, 44, 96, 150, 205, 255};
+    static const uint8_t brightness[] = {255, 190, 125, 70, 30, 0};
+    const uint8_t topR = 0;
+    const uint8_t topG = 8;
+    const uint8_t topB = 255;
+    const int sample = constrain((static_cast<int32_t>(y) * 255) / 239, 0, 255);
+    uint8_t level = brightness[sizeof(brightness) - 1];
+    for (uint8_t i = 1; i < sizeof(stops); ++i) {
+        if (sample <= stops[i]) {
+            const int span = stops[i] - stops[i - 1];
+            const int blend = span == 0 ? 0 : ((sample - stops[i - 1]) * 255) / span;
+            const int inv = 255 - blend;
+            level = static_cast<uint8_t>((brightness[i - 1] * inv + brightness[i] * blend) / 255);
+            break;
+        }
+    }
+    return display.color565(scaleChannel(topR, level), scaleChannel(topG, level),
+                            scaleChannel(topB, level));
+}
+
+void markAquariumDirtyIfVisible() {
+    const bool online = peerOnline();
+    const bool isHost = localIsHost();
+    portENTER_CRITICAL(&gameMux);
+    if (screenMode == ScreenMode::Aquarium ||
+        (screenMode == ScreenMode::Home && (!online || !isHost))) {
+        displayDirty = true;
+    }
+    portEXIT_CRITICAL(&gameMux);
+}
+
+template <typename Surface>
+void drawAquariumFrame(Surface& surface, const char* title,
+                       bool showExitButton) {
+    for (int16_t y = 0; y < 240; ++y) {
+        surface.drawFastHLine(0, y, 320, aquariumGradientColor(y));
+    }
+    surface.setTextDatum(MC_DATUM);
+    surface.setTextColor(TFT_CYAN);
+    surface.drawString(title, showExitButton ? 137 : 160, 14, 2);
+    if (showExitButton) {
+        surface.fillRoundRect(kExitX, kExitY, kExitWidth, kExitHeight, 5,
+                              peerOnline() ? TFT_RED : TFT_ORANGE);
+        surface.drawRoundRect(kExitX, kExitY, kExitWidth, kExitHeight, 5,
+                              TFT_WHITE);
+        surface.setTextColor(TFT_WHITE, peerOnline() ? TFT_RED : TFT_ORANGE);
+        surface.drawString("EXIT", kExitX + kExitWidth / 2,
+                           kExitY + kExitHeight / 2, 2);
+    }
+    surface.setTextDatum(ML_DATUM);
+    for (uint8_t i = 0; i < 12; ++i) {
+        const int16_t x = 18 + i * 26;
+        const int16_t sway = ((millis() / 250 + i) % 3) - 1;
+        surface.drawLine(x, 236, x + sway, 210 - (i % 4) * 3, TFT_GREEN);
+    }
+    surface.setTextDatum(MC_DATUM);
+    surface.setTextColor(TFT_WHITE);
+    for (uint8_t i = 0; i < 14; ++i) {
+        const int16_t x = (i * 23 + (millis() / 90)) % 320;
+        const int16_t y = 36 + ((190 + i * 41 - (millis() / 45)) % 170);
+        surface.drawString("o", x, y, 1);
+    }
+    for (const AquariumFood& food : aquariumFood) {
+        if (food.active) {
+            surface.setTextColor(food.color);
+            surface.drawString("*", food.x, food.y, 2);
+        }
+    }
+    surface.setTextDatum(ML_DATUM);
+    for (const AquariumFish& fish : aquariumFish) {
+        surface.setTextColor(fish.color);
+        surface.drawString(aquariumGlyph(fish.glyph, fish.vx), fish.x, fish.y, 2);
+    }
+    surface.setTextDatum(MC_DATUM);
+    surface.setTextColor(TFT_LIGHTGREY);
+    surface.drawString("tap to feed / move fish", 160, 225, 2);
+}
+
+void renderAquarium(const char* title = "ASCII AQUARIUM",
+                    bool showExitButton = true) {
+    if (!aquariumInitialized) {
+        initAquarium();
+    }
+    if (!aquariumSpriteReady) {
+        aquariumSprite.setColorDepth(8);
+        aquariumSpriteReady = aquariumSprite.createSprite(320, 240) != nullptr;
+        Serial.printf("AQUARIUM sprite=%s\n",
+                      aquariumSpriteReady ? "ready" : "fallback");
+    }
+    if (aquariumSpriteReady) {
+        drawAquariumFrame(aquariumSprite, title, showExitButton);
+        aquariumSprite.pushSprite(0, 0);
+    } else {
+        drawAquariumFrame(display, title, showExitButton);
+    }
+}
+
+
 void renderHome(bool online, bool deliveryPending) {
+    if (!deliveryPending && (!online || !localIsHost())) {
+        renderAquarium(online ? "WAITING FOR HOST" : "CONNECT PEER", false);
+        return;
+    }
+
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
@@ -486,7 +742,6 @@ void renderHome(bool online, bool deliveryPending) {
         display.drawString("Choose a synchronized game", display.width() / 2,
                            61, 2);
 
-        // Slide puzzles row
         display.fillRoundRect(10, 82, 145, 89, 10, TFT_PURPLE);
         display.drawRoundRect(10, 82, 145, 89, 10, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_PURPLE);
@@ -499,15 +754,17 @@ void renderHome(bool online, bool deliveryPending) {
         display.drawString("GREEK", 237, 111, 4);
         display.drawString("11 PIECES / 4x3", 237, 147, 2);
 
-        // Mastermind row
-        display.fillRoundRect(45, 185, 230, 55, 10, TFT_MAROON);
-        display.drawRoundRect(45, 185, 230, 55, 10, TFT_WHITE);
+        display.fillRoundRect(10, 185, 145, 55, 10, TFT_MAROON);
+        display.drawRoundRect(10, 185, 145, 55, 10, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_MAROON);
-        display.drawString("MASTERMIND", display.width() / 2, 212, 4);
+        display.drawString("MASTERMIND", 82, 212, 2);
+
+        display.fillRoundRect(165, 185, 145, 55, 10, TFT_BLUE);
+        display.drawRoundRect(165, 185, 145, 55, 10, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_BLUE);
+        display.drawString("AQUARIUM", 237, 212, 2);
     } else {
-        display.setTextColor(online ? TFT_LIGHTGREY : TFT_ORANGE, TFT_NAVY);
-        display.drawString(online ? "WAITING FOR HOST" : "CONNECT PEER",
-                           display.width() / 2, 125, 2);
+        renderAquarium("CONNECT PEER", false);
     }
 }
 
@@ -742,6 +999,8 @@ void renderScreen() {
         renderComplete(online, game);
     } else if (mode == ScreenMode::Mastermind && mastermindReady) {
         renderMastermind(online, mastermind, mastermindDeliveryPending);
+    } else if (mode == ScreenMode::Aquarium) {
+        renderAquarium();
     } else if (mode == ScreenMode::Puzzle && ready) {
         renderPuzzle(online, game, deliveryPending);
     } else {
@@ -1167,6 +1426,106 @@ void processMastermindStateRequest(const uint8_t* address,
     portEXIT_CRITICAL(&gameMux);
 }
 
+void sendAquariumEvent(AquariumEventType event, uint8_t x = 0, uint8_t y = 0,
+                       uint8_t fish = 0) {
+    if (!peerOnline()) {
+        return;
+    }
+    AquariumEventPacket packet{makeHeader(MessageType::AquariumEvent), event, x, y,
+                               fish, ++aquariumEventCounter};
+    esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
+                 sizeof(packet));
+    Serial.printf("AQUARIUM tx event=%u x=%u y=%u fish=%u id=%lu\n",
+                  static_cast<unsigned>(event), x, y, fish,
+                  static_cast<unsigned long>(packet.eventId));
+}
+
+void sendAquariumSync() {
+    if (!peerOnline() || !localIsHost()) {
+        return;
+    }
+    AquariumSyncPacket packet{makeHeader(MessageType::AquariumSync),
+                              ++aquariumSyncCounter, {}};
+    for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
+        packet.fish[i] = AquariumFishSync{
+            aquariumFish[i].x,
+            aquariumFish[i].y,
+            aquariumFish[i].vx,
+            aquariumFish[i].vy,
+            aquariumFish[i].glyph,
+            0,
+        };
+    }
+    esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
+                 sizeof(packet));
+    Serial.printf("AQUARIUM tx sync id=%lu\n",
+                  static_cast<unsigned long>(packet.syncId));
+}
+
+void processAquariumSync(const uint8_t* address, const uint8_t* data, int length) {
+    if (length != sizeof(AquariumSyncPacket)) {
+        return;
+    }
+    AquariumSyncPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    if (!validHeader(packet.header, MessageType::AquariumSync) ||
+        !bindOrMatchPeer(address, packet.header.senderId, packet.header.sessionId,
+                         packet.header.sequence) ||
+        !isSequenceNewer(packet.syncId, aquariumLastRemoteSyncId)) {
+        return;
+    }
+    aquariumLastRemoteSyncId = packet.syncId;
+    if (!aquariumInitialized) {
+        initAquarium();
+    }
+    for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
+        aquariumFish[i].x = packet.fish[i].x;
+        aquariumFish[i].y = packet.fish[i].y;
+        aquariumFish[i].vx = packet.fish[i].vx;
+        aquariumFish[i].vy = packet.fish[i].vy;
+        aquariumFish[i].glyph = packet.fish[i].glyph;
+    }
+    markAquariumDirtyIfVisible();
+    Serial.printf("AQUARIUM rx sync id=%lu\n",
+                  static_cast<unsigned long>(packet.syncId));
+}
+
+void processAquariumEvent(const uint8_t* address, const uint8_t* data, int length) {
+    if (length != sizeof(AquariumEventPacket)) {
+        return;
+    }
+    AquariumEventPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    if (!validHeader(packet.header, MessageType::AquariumEvent) ||
+        !bindOrMatchPeer(address, packet.header.senderId, packet.header.sessionId,
+                         packet.header.sequence) ||
+        !isSequenceNewer(packet.eventId, aquariumLastRemoteEventId)) {
+        return;
+    }
+    aquariumLastRemoteEventId = packet.eventId;
+    if (packet.event == AquariumEventType::Start) {
+        setAquariumMode(true);
+    } else if (packet.event == AquariumEventType::Exit) {
+        setAquariumMode(false);
+    } else if (packet.event == AquariumEventType::Food) {
+        addAquariumFood(packet.x, packet.y);
+        nudgeAquariumFish(packet.fish, packet.x, packet.y);
+        markAquariumDirtyIfVisible();
+        portENTER_CRITICAL(&gameMux);
+        aquariumSyncSoon = localIsHost();
+        portEXIT_CRITICAL(&gameMux);
+    } else if (packet.event == AquariumEventType::NudgeFish) {
+        nudgeAquariumFish(packet.fish, packet.x, packet.y);
+        markAquariumDirtyIfVisible();
+        portENTER_CRITICAL(&gameMux);
+        aquariumSyncSoon = localIsHost();
+        portEXIT_CRITICAL(&gameMux);
+    }
+    Serial.printf("AQUARIUM rx event=%u x=%u y=%u fish=%u id=%lu\n",
+                  static_cast<unsigned>(packet.event), packet.x, packet.y,
+                  packet.fish, static_cast<unsigned long>(packet.eventId));
+}
+
 void onPacketReceived(const uint8_t* address, const uint8_t* data, int length) {
     if (length < sizeof(PacketHeader)) {
         return;
@@ -1202,6 +1561,10 @@ void onPacketReceived(const uint8_t* address, const uint8_t* data, int length) {
         processMastermindAckPacket(address, data, length);
     } else if (header.type == MessageType::MastermindRequestState) {
         processMastermindStateRequest(address, data, length);
+    } else if (header.type == MessageType::AquariumEvent) {
+        processAquariumEvent(address, data, length);
+    } else if (header.type == MessageType::AquariumSync) {
+        processAquariumSync(address, data, length);
     }
     xSemaphoreGive(protocolMutex);
 }
@@ -1631,11 +1994,44 @@ void handleTouch() {
             } else if (x >= 165 && x < 310) {
                 startPuzzle({4, 3, PuzzleTheme::Greek});
             }
-        } else if (localIsHost() && peerOnline() && x >= 45 && x < 275) {
-            if (y >= 185 && y < 240) {
+        } else if (localIsHost() && peerOnline() && y >= 185 && y < 240) {
+            if (x >= 10 && x < 155) {
                 startMastermind();
+            } else if (x >= 165 && x < 310) {
+                setAquariumMode(true);
+                sendAquariumEvent(AquariumEventType::Start);
+                sendAquariumSync();
             }
+        } else if (!peerOnline() || !localIsHost()) {
+            const uint8_t fish = (x / 46) % kAquariumFishCount;
+            addAquariumFood(static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+            nudgeAquariumFish(fish, static_cast<uint8_t>(x),
+                              static_cast<uint8_t>(y));
+            if (peerOnline()) {
+                sendAquariumEvent(AquariumEventType::Food,
+                                  static_cast<uint8_t>(x),
+                                  static_cast<uint8_t>(y), fish);
+            }
+            portENTER_CRITICAL(&gameMux);
+            displayDirty = true;
+            portEXIT_CRITICAL(&gameMux);
         }
+        return;
+    }
+    if (mode == ScreenMode::Aquarium) {
+        if (exitPressed) {
+            setAquariumMode(false);
+            sendAquariumEvent(AquariumEventType::Exit);
+            return;
+        }
+        const uint8_t fish = (x / 46) % kAquariumFishCount;
+        addAquariumFood(static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+        nudgeAquariumFish(fish, static_cast<uint8_t>(x), static_cast<uint8_t>(y));
+        sendAquariumEvent(AquariumEventType::Food, static_cast<uint8_t>(x),
+                          static_cast<uint8_t>(y), fish);
+        portENTER_CRITICAL(&gameMux);
+        displayDirty = true;
+        portEXIT_CRITICAL(&gameMux);
         return;
     }
     if (mode == ScreenMode::Mastermind) {
@@ -1850,6 +2246,7 @@ void loop() {
     refreshPeerIdentity();
     serviceProtocol(now);
     advanceMastermindRoundIfReady(now);
+    stepAquarium(now);
     handleTouch();
 
     const bool online = peerOnline();

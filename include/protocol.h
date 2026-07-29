@@ -7,7 +7,7 @@
 #include "puzzle_logic.h"
 
 constexpr uint32_t kProtocolMagic = 0x46374359;
-constexpr uint8_t kProtocolVersion = 7;
+constexpr uint8_t kProtocolVersion = 9;
 
 inline bool isSequenceNewer(uint32_t candidate, uint32_t previous) {
     return static_cast<int32_t>(candidate - previous) > 0;
@@ -42,6 +42,8 @@ enum class MessageType : uint8_t {
     MastermindFullState,
     MastermindAck,
     MastermindRequestState,
+    AquariumEvent,
+    AquariumSync,
 };
 
 struct PacketHeader {
@@ -122,6 +124,39 @@ struct MastermindStateRequestPacket {
     uint32_t stateDigest;
 };
 
+enum class AquariumEventType : uint8_t {
+    Start = 1,
+    Exit,
+    Food,
+    NudgeFish,
+};
+
+struct AquariumEventPacket {
+    PacketHeader header;
+    AquariumEventType event;
+    uint8_t x;
+    uint8_t y;
+    uint8_t fish;
+    uint32_t eventId;
+};
+
+constexpr uint8_t kAquariumSyncFishCount = 7;
+
+struct AquariumFishSync {
+    int16_t x;
+    int16_t y;
+    int8_t vx;
+    int8_t vy;
+    uint8_t glyph;
+    uint8_t reserved;
+};
+
+struct AquariumSyncPacket {
+    PacketHeader header;
+    uint32_t syncId;
+    AquariumFishSync fish[kAquariumSyncFishCount];
+};
+
 static_assert(sizeof(PacketHeader) == 20, "PacketHeader wire format changed");
 static_assert(sizeof(HeartbeatPacket) == 24,
               "HeartbeatPacket wire format changed");
@@ -139,3 +174,9 @@ static_assert(sizeof(GameAckPacket) == 40,
               "GameAckPacket wire format changed");
 static_assert(sizeof(MastermindStateRequestPacket) == 32,
               "MastermindStateRequestPacket wire format changed");
+static_assert(sizeof(AquariumEventPacket) == 28,
+              "AquariumEventPacket wire format changed");
+static_assert(sizeof(AquariumFishSync) == 8,
+              "AquariumFishSync wire format changed");
+static_assert(sizeof(AquariumSyncPacket) == 80,
+              "AquariumSyncPacket wire format changed");
