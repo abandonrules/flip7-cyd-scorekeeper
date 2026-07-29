@@ -21,9 +21,15 @@ It currently ships:
 - **Aquarium** — a shared idle/waiting screen with synced fish, feeding, hunger,
   and peer synchronization.
 
-The host board starts games from Home when the peer is online. Both boards have
-an `EXIT` path back to Home for synchronized games; EXIT is retried while a peer
-is temporarily offline so the pair converges when the link returns.
+The host board starts games from Home when the peer is online. Sliding puzzle
+tiles briefly flash their lock number when they land in the correct position:
+Planet Slide and Greek Slide flash the tile/order number, while Periodic Order
+flashes the element atomic number before returning to the centered symbol. Solved
+sliding puzzles pause on a `GREAT JOB!` status screen with a turn count, and the
+large `GREAT JOB` button returns both boards Home through the synchronized exit
+path. Both boards also keep an `EXIT` path back to Home for synchronized games;
+EXIT is retried while a peer is temporarily offline so the pair converges when
+the link returns.
 
 ## Hardware
 
@@ -152,6 +158,7 @@ g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/puzzle_logic_test.cpp -o /tm
 g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/mastermind_logic_test.cpp -o /tmp/mastermind_logic_test && /tmp/mastermind_logic_test
 g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/power_save_logic_test.cpp -o /tmp/power_save_logic_test && /tmp/power_save_logic_test
 g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/aquarium_logic_test.cpp -o /tmp/aquarium_logic_test && /tmp/aquarium_logic_test
+g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/periodic_logic_test.cpp -o /tmp/periodic_logic_test && /tmp/periodic_logic_test
 ```
 
 Hardware-ready changes should also be flashed to both CYDs and visually checked
