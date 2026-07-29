@@ -35,6 +35,8 @@ constexpr uint32_t kStateRequestIntervalMs = 1000;
 constexpr uint32_t kPeerTimeoutMs = 3000;
 constexpr uint32_t kCompleteDisplayMs = 2000;
 constexpr uint32_t kMastermindCompleteDisplayMs = 3000;
+constexpr uint32_t kPeriodicLockFlashMs = 750;
+constexpr uint8_t kNoPuzzlePosition = UINT8_MAX;
 constexpr size_t kRetiredSessionCapacity = 16;
 
 struct KnownBoard {
@@ -143,7 +145,9 @@ uint32_t lastHeartbeatMs = 0;
 uint32_t lastEspNowAttemptMs = 0;
 uint32_t lastStateRequestMs = 0;
 uint32_t completedAtMs = 0;
+uint32_t periodicLockFlashUntilMs = 0;
 uint32_t mastermindCompletedAtMs = 0;
+uint8_t periodicLockFlashPosition = kNoPuzzlePosition;
 uint32_t remoteLogRevision = 0;
 uint32_t remoteLogSender = 0;
 uint32_t ackLogGameId = 0;
@@ -471,6 +475,47 @@ void drawElementTile(uint8_t atomicNumber, int16_t cx, int16_t cy,
     display.setTextDatum(MC_DATUM);
     display.setTextColor(color, background);
     display.drawString(periodicElementSymbol(atomicNumber), cx, cy, 4);
+}
+
+void drawElementNumber(uint8_t atomicNumber, int16_t cx, int16_t cy,
+                       uint16_t background) {
+    char number[5];
+    snprintf(number, sizeof(number), "%u", atomicNumber);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_YELLOW, background);
+    display.drawString(number, cx, cy, 4);
+}
+
+bool sameActiveElementsPuzzle(const PuzzleState& first,
+                              const PuzzleState& second) {
+    return first.gameId == second.gameId &&
+           first.theme == PuzzleTheme::Elements &&
+           samePuzzleSpec(puzzleSpec(first), puzzleSpec(second));
+}
+
+uint8_t newlyLockedPeriodicPosition(const PuzzleState& previous,
+                                    const PuzzleState& next) {
+    if (!sameActiveElementsPuzzle(previous, next)) {
+        return kNoPuzzlePosition;
+    }
+    const uint8_t count = puzzleTileCount(next);
+    for (uint8_t position = 0; position < count; ++position) {
+        if (!isTileCorrect(previous, position) &&
+            isTileCorrect(next, position) && next.tiles[position] != 0) {
+            return position;
+        }
+    }
+    return kNoPuzzlePosition;
+}
+
+void notePeriodicLockFlash(const PuzzleState& previous,
+                           const PuzzleState& next, uint32_t now) {
+    const uint8_t position = newlyLockedPeriodicPosition(previous, next);
+    if (position == kNoPuzzlePosition) {
+        return;
+    }
+    periodicLockFlashPosition = position;
+    periodicLockFlashUntilMs = now + kPeriodicLockFlashMs;
 }
 
 uint16_t tileColor(uint8_t tile) {
@@ -888,8 +933,15 @@ void renderPuzzle(bool online, const PuzzleState& game,
         const uint16_t symbolColor = locked ? TFT_GREEN : TFT_WHITE;
         const uint16_t symbolBackground = locked ? TFT_NAVY : tileColor(tile);
         if (game.theme == PuzzleTheme::Elements) {
-            drawElementTile(periodicElementForTile(game, tile), centerX,
-                            centerY, symbolColor, symbolBackground);
+            const uint8_t atomicNumber = periodicElementForTile(game, tile);
+            if (locked && position == periodicLockFlashPosition &&
+                periodicLockFlashUntilMs != 0) {
+                drawElementNumber(atomicNumber, centerX, centerY,
+                                  symbolBackground);
+            } else {
+                drawElementTile(atomicNumber, centerX, centerY, symbolColor,
+                                symbolBackground);
+            }
         } else if (game.theme == PuzzleTheme::Planets) {
             drawPlanetSymbol(tile, centerX, centerY, symbolColor);
         } else {
@@ -1200,6 +1252,8 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
                                        packet.header.senderId, boardId) ||
                       (equalConflict && peerIsAuthority && participantsValid);
         if (adopt) {
+            const bool hadState = stateReady;
+            const PuzzleState previous = puzzleState;
             puzzleState = packet.state;
             stateReady = true;
             pendingDelivery.active = false;
@@ -1214,6 +1268,9 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
                 screenMode = ScreenMode::Puzzle;
             }
             displayDirty = true;
+            if (hadState) {
+                notePeriodicLockFlash(previous, puzzleState, millis());
+            }
             fullLogGameId = puzzleState.gameId;
             fullLogRevision = puzzleState.revision;
             fullLogPending = true;
@@ -1228,12 +1285,16 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
         }
     } else if (validTurnId && type == MessageType::PuzzleState) {
         duplicate = stateReady && isSamePuzzle(puzzleState, packet.state);
+        PuzzleState previous{};
+        bool hadPrevious = false;
         if (!stateReady && packet.state.revision == 1) {
             PuzzleState base = makeScrambledPuzzle(
                 std::min(boardId, gamePeerBoardId), packet.state.gameId,
                 puzzleSpec(packet.state));
             if (isValidRemoteTransition(base, packet.state,
                                         packet.header.senderId, boardId)) {
+                previous = base;
+                hadPrevious = true;
                 puzzleState = packet.state;
                 stateReady = true;
                 accepted = true;
@@ -1241,6 +1302,8 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
         } else if (stateReady &&
                    isValidRemoteTransition(puzzleState, packet.state,
                                            packet.header.senderId, boardId)) {
+            previous = puzzleState;
+            hadPrevious = true;
             puzzleState = packet.state;
             accepted = true;
         }
@@ -1254,6 +1317,9 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
                                                       : ScreenMode::Puzzle;
             if (screenMode == ScreenMode::Complete) {
                 completedAtMs = millis();
+            }
+            if (hadPrevious) {
+                notePeriodicLockFlash(previous, puzzleState, millis());
             }
             displayDirty = true;
             remoteLogRevision = puzzleState.revision;
@@ -2248,6 +2314,7 @@ void handleTouch(uint32_t now) {
         puzzleState.turnBoardId == snapshot.turnBoardId &&
         samePuzzleSpec(puzzleSpec(puzzleState), puzzleSpec(snapshot))) {
         tile = puzzleState.tiles[position];
+        const PuzzleState previous = puzzleState;
         accepted = tryPuzzleMove(puzzleState, position, boardId,
                                  gamePeerBoardId);
         if (accepted) {
@@ -2258,6 +2325,7 @@ void handleTouch(uint32_t now) {
                 screenMode = ScreenMode::Complete;
                 completedAtMs = millis();
             }
+            notePeriodicLockFlash(previous, moved, millis());
             displayDirty = true;
         }
     }
@@ -2472,6 +2540,12 @@ void loop() {
         sendFullStateSoon = false;
         requestStateSoon = false;
         reconciliationPending = false;
+        displayDirty = true;
+    }
+    if (periodicLockFlashUntilMs != 0 &&
+        static_cast<int32_t>(now - periodicLockFlashUntilMs) >= 0) {
+        periodicLockFlashUntilMs = 0;
+        periodicLockFlashPosition = kNoPuzzlePosition;
         displayDirty = true;
     }
     shouldRender = displayDirty && !powerSave.active;
