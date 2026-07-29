@@ -34,7 +34,7 @@ constexpr uint32_t kDeliveryRetryMs = 300;
 constexpr uint32_t kStateRequestIntervalMs = 1000;
 constexpr uint32_t kPeerTimeoutMs = 3000;
 constexpr uint32_t kMastermindCompleteDisplayMs = 3000;
-constexpr uint32_t kPeriodicLockFlashMs = 750;
+constexpr uint32_t kPuzzleLockFlashMs = 750;
 constexpr uint8_t kNoPuzzlePosition = UINT8_MAX;
 constexpr size_t kRetiredSessionCapacity = 16;
 
@@ -147,9 +147,9 @@ uint32_t nextSequence = 1;
 uint32_t lastHeartbeatMs = 0;
 uint32_t lastEspNowAttemptMs = 0;
 uint32_t lastStateRequestMs = 0;
-uint32_t periodicLockFlashUntilMs = 0;
+uint32_t puzzleLockFlashUntilMs = 0;
 uint32_t mastermindCompletedAtMs = 0;
-uint8_t periodicLockFlashPosition = kNoPuzzlePosition;
+uint8_t puzzleLockFlashPosition = kNoPuzzlePosition;
 uint32_t remoteLogRevision = 0;
 uint32_t remoteLogSender = 0;
 uint32_t ackLogGameId = 0;
@@ -488,16 +488,14 @@ void drawElementNumber(uint8_t atomicNumber, int16_t cx, int16_t cy,
     display.drawString(number, cx, cy, 4);
 }
 
-bool sameActiveElementsPuzzle(const PuzzleState& first,
-                              const PuzzleState& second) {
+bool sameActivePuzzle(const PuzzleState& first, const PuzzleState& second) {
     return first.gameId == second.gameId &&
-           first.theme == PuzzleTheme::Elements &&
            samePuzzleSpec(puzzleSpec(first), puzzleSpec(second));
 }
 
-uint8_t newlyLockedPeriodicPosition(const PuzzleState& previous,
-                                    const PuzzleState& next) {
-    if (!sameActiveElementsPuzzle(previous, next)) {
+uint8_t newlyLockedPuzzlePosition(const PuzzleState& previous,
+                                  const PuzzleState& next) {
+    if (!sameActivePuzzle(previous, next)) {
         return kNoPuzzlePosition;
     }
     const uint8_t count = puzzleTileCount(next);
@@ -510,14 +508,21 @@ uint8_t newlyLockedPeriodicPosition(const PuzzleState& previous,
     return kNoPuzzlePosition;
 }
 
-void notePeriodicLockFlash(const PuzzleState& previous,
-                           const PuzzleState& next, uint32_t now) {
-    const uint8_t position = newlyLockedPeriodicPosition(previous, next);
+uint8_t lockFlashNumberForTile(const PuzzleState& game, uint8_t tile) {
+    if (game.theme == PuzzleTheme::Elements) {
+        return periodicElementForTile(game, tile);
+    }
+    return tile;
+}
+
+void notePuzzleLockFlash(const PuzzleState& previous,
+                         const PuzzleState& next, uint32_t now) {
+    const uint8_t position = newlyLockedPuzzlePosition(previous, next);
     if (position == kNoPuzzlePosition) {
         return;
     }
-    periodicLockFlashPosition = position;
-    periodicLockFlashUntilMs = now + kPeriodicLockFlashMs;
+    puzzleLockFlashPosition = position;
+    puzzleLockFlashUntilMs = now + kPuzzleLockFlashMs;
 }
 
 uint16_t tileColor(uint8_t tile) {
@@ -934,16 +939,14 @@ void renderPuzzle(bool online, const PuzzleState& game,
         const int16_t centerY = y + layout.tileHeight / 2;
         const uint16_t symbolColor = locked ? TFT_GREEN : TFT_WHITE;
         const uint16_t symbolBackground = locked ? TFT_NAVY : tileColor(tile);
-        if (game.theme == PuzzleTheme::Elements) {
+        if (locked && position == puzzleLockFlashPosition &&
+            puzzleLockFlashUntilMs != 0) {
+            drawElementNumber(lockFlashNumberForTile(game, tile), centerX,
+                              centerY, symbolBackground);
+        } else if (game.theme == PuzzleTheme::Elements) {
             const uint8_t atomicNumber = periodicElementForTile(game, tile);
-            if (locked && position == periodicLockFlashPosition &&
-                periodicLockFlashUntilMs != 0) {
-                drawElementNumber(atomicNumber, centerX, centerY,
-                                  symbolBackground);
-            } else {
-                drawElementTile(atomicNumber, centerX, centerY, symbolColor,
-                                symbolBackground);
-            }
+            drawElementTile(atomicNumber, centerX, centerY, symbolColor,
+                            symbolBackground);
         } else if (game.theme == PuzzleTheme::Planets) {
             drawPlanetSymbol(tile, centerX, centerY, symbolColor);
         } else {
@@ -1281,7 +1284,7 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
             }
             displayDirty = true;
             if (hadState) {
-                notePeriodicLockFlash(previous, puzzleState, millis());
+                notePuzzleLockFlash(previous, puzzleState, millis());
             }
             fullLogGameId = puzzleState.gameId;
             fullLogRevision = puzzleState.revision;
@@ -1328,7 +1331,7 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
             screenMode = isPuzzleSolved(puzzleState) ? ScreenMode::Complete
                                                       : ScreenMode::Puzzle;
             if (hadPrevious) {
-                notePeriodicLockFlash(previous, puzzleState, millis());
+                notePuzzleLockFlash(previous, puzzleState, millis());
             }
             displayDirty = true;
             remoteLogRevision = puzzleState.revision;
@@ -2335,7 +2338,7 @@ void handleTouch(uint32_t now) {
             if (isPuzzleSolved(moved)) {
                 screenMode = ScreenMode::Complete;
             }
-            notePeriodicLockFlash(previous, moved, millis());
+            notePuzzleLockFlash(previous, moved, millis());
             displayDirty = true;
         }
     }
@@ -2540,10 +2543,10 @@ void loop() {
     uint32_t fullGameId = 0;
     uint32_t fullRevision = 0;
     portENTER_CRITICAL(&gameMux);
-    if (periodicLockFlashUntilMs != 0 &&
-        static_cast<int32_t>(now - periodicLockFlashUntilMs) >= 0) {
-        periodicLockFlashUntilMs = 0;
-        periodicLockFlashPosition = kNoPuzzlePosition;
+    if (puzzleLockFlashUntilMs != 0 &&
+        static_cast<int32_t>(now - puzzleLockFlashUntilMs) >= 0) {
+        puzzleLockFlashUntilMs = 0;
+        puzzleLockFlashPosition = kNoPuzzlePosition;
         displayDirty = true;
     }
     shouldRender = displayDirty && !powerSave.active;
