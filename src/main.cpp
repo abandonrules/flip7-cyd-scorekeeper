@@ -917,7 +917,11 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
         }
     }
     if (accepted) {
-        activeGame = {puzzleState.gameId, ActiveGameKind::Puzzle};
+        activeGame = {
+            puzzleState.gameId,
+            puzzleState.phase == PuzzlePhase::Exited ? ActiveGameKind::Home
+                                                     : ActiveGameKind::Puzzle,
+        };
         mastermindPendingDelivery.active = false;
         mastermindReconciliationPending = false;
         mastermindRequestStateSoon = false;
@@ -1271,9 +1275,11 @@ void sendPuzzleStateIfCurrent(MessageType type, const PuzzleState& state) {
     portENTER_CRITICAL(&gameMux);
     const bool snapshotMatches =
         stateReady && memcmp(&puzzleState, &state, sizeof(state)) == 0;
+    const bool terminalDelivery = state.phase == PuzzlePhase::Exited;
     const bool shouldSend =
         shouldSendActiveGameState(activeGame, ActiveGameKind::Puzzle,
-                                  state.gameId, snapshotMatches);
+                                  state.gameId, snapshotMatches,
+                                  terminalDelivery);
     portEXIT_CRITICAL(&gameMux);
     esp_err_t result = ESP_ERR_INVALID_STATE;
     if (shouldSend) {
@@ -1608,6 +1614,7 @@ void handleTouch() {
                 pendingDelivery = PendingDelivery{
                     true, MessageType::PuzzleState, exited, 0};
                 screenMode = ScreenMode::Home;
+                activeGame = {exited.gameId, ActiveGameKind::Home};
                 completedAtMs = 0;
                 reconciliationPending = false;
                 displayDirty = true;
@@ -1714,7 +1721,9 @@ void serviceProtocol(uint32_t now) {
         pendingAck.active = false;
         sendAckNow = true;
     }
-    if (sendFullStateSoon && stateReady && puzzleActive) {
+    if (sendFullStateSoon && stateReady &&
+        (puzzleActive || (discoveringGame &&
+                          puzzleState.phase == PuzzlePhase::Exited))) {
         sendFullStateSoon = false;
         fullState = puzzleState;
         sendFullNow = true;
