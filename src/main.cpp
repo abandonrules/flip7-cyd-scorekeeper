@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "game_selection.h"
+#include "aquarium_logic.h"
 #include "generated_peer_keys.h"
 #include "protocol.h"
 #include "puzzle_logic.h"
@@ -177,6 +178,7 @@ struct AquariumFish {
     int8_t vx;
     int8_t vy;
     uint8_t glyph;
+    uint8_t hunger;
     uint16_t color;
 };
 
@@ -195,6 +197,7 @@ uint32_t aquariumLastRemoteEventId = 0;
 uint32_t aquariumSyncCounter = 0;
 uint32_t aquariumLastRemoteSyncId = 0;
 uint32_t aquariumLastSyncMs = 0;
+uint32_t aquariumLastHungerMs = 0;
 bool aquariumInitialized = false;
 bool aquariumSpriteReady = false;
 bool aquariumSyncSoon = false;
@@ -509,21 +512,52 @@ const char* aquariumGlyph(uint8_t glyph, int8_t vx) {
     return vx >= 0 ? right[index] : left[index];
 }
 
-void initAquarium() {
+void spaceAquariumFish() {
     static const uint16_t colors[] = {TFT_GREEN, TFT_CYAN, TFT_PINK, TFT_ORANGE, TFT_YELLOW, TFT_MAGENTA, TFT_SKYBLUE};
     for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
         aquariumFish[i] = AquariumFish{
-            static_cast<int16_t>(20 + i * 38),
-            static_cast<int16_t>(54 + (i % 4) * 31),
-            static_cast<int8_t>((i % 2 == 0) ? 2 : -2),
-            static_cast<int8_t>((i % 3) - 1),
+            aquariumInitialFishX(i),
+            aquariumInitialFishY(i),
+            aquariumInitialFishVx(i),
+            aquariumInitialFishVy(i),
             i,
+            aquariumInitialHunger(i),
             colors[i],
         };
     }
+}
+
+bool aquariumFishLookCollapsed() {
+    int16_t x[kAquariumFishCount]{};
+    int16_t y[kAquariumFishCount]{};
+    for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
+        x[i] = aquariumFish[i].x;
+        y[i] = aquariumFish[i].y;
+    }
+    return aquariumSnapshotLooksCollapsed(x, y, kAquariumFishCount);
+}
+
+void healAquariumSpacingIfCollapsed() {
+    if (!aquariumFishLookCollapsed()) {
+        return;
+    }
+    uint8_t hunger[kAquariumFishCount]{};
+    for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
+        hunger[i] = aquariumFish[i].hunger;
+    }
+    spaceAquariumFish();
+    for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
+        aquariumFish[i].hunger = hunger[i] == 0 ? aquariumInitialHunger(i) : hunger[i];
+    }
+    aquariumSyncSoon = localIsHost();
+}
+
+void initAquarium() {
+    spaceAquariumFish();
     for (AquariumFood& food : aquariumFood) {
         food = AquariumFood{false, 0, 0, TFT_ORANGE};
     }
+    aquariumLastHungerMs = millis();
     aquariumInitialized = true;
 }
 
@@ -552,6 +586,12 @@ void nudgeAquariumFish(uint8_t fish, uint8_t x, uint8_t y) {
 }
 
 void setAquariumMode(bool active) {
+    if (active) {
+        if (!aquariumInitialized) {
+            initAquarium();
+        }
+        healAquariumSpacingIfCollapsed();
+    }
     portENTER_CRITICAL(&gameMux);
     screenMode = active ? ScreenMode::Aquarium : ScreenMode::Home;
     displayDirty = true;
@@ -575,6 +615,14 @@ void stepAquarium(uint32_t now) {
         return;
     }
     aquariumLastFrameMs = now;
+    const uint32_t hungerElapsed = aquariumLastHungerMs == 0 ? 0 : now - aquariumLastHungerMs;
+    if (hungerElapsed >= kAquariumHungerTickMs) {
+        for (AquariumFish& fish : aquariumFish) {
+            fish.hunger = aquariumDrainSatiety(fish.hunger, hungerElapsed);
+        }
+        aquariumLastHungerMs = now;
+        aquariumSyncSoon = localIsHost();
+    }
     for (AquariumFood& food : aquariumFood) {
         if (food.active) {
             food.y = std::min<int16_t>(food.y + 2, 213);
@@ -584,12 +632,20 @@ void stepAquarium(uint32_t now) {
         }
     }
     for (AquariumFish& fish : aquariumFish) {
-        for (const AquariumFood& food : aquariumFood) {
-            if (food.active && abs(food.x - fish.x) < 70 && abs(food.y - fish.y) < 55) {
-                fish.vx = food.x >= fish.x ? 3 : -3;
-                fish.vy = food.y >= fish.y ? 1 : -1;
-                break;
+        for (AquariumFood& food : aquariumFood) {
+            if (!food.active || !aquariumFishShouldChaseFood(fish.hunger, fish.x,
+                                                             fish.y, food.x,
+                                                             food.y)) {
+                continue;
             }
+            fish.vx = food.x >= fish.x ? 3 : -3;
+            fish.vy = food.y >= fish.y ? 1 : -1;
+            if (aquariumFishReachedFood(fish.x, fish.y, food.x, food.y)) {
+                fish.hunger = aquariumSatisfyHunger(fish.hunger);
+                food.active = false;
+                aquariumSyncSoon = localIsHost();
+            }
+            break;
         }
         fish.x += fish.vx;
         fish.y += fish.vy;
@@ -598,11 +654,12 @@ void stepAquarium(uint32_t now) {
         } else if (fish.x > 335) {
             fish.x = -25;
         }
-        if (fish.y < 45 || fish.y > 198) {
+        if (fish.y < kAquariumMinFishY || fish.y > kAquariumMaxFishY) {
             fish.vy = -fish.vy;
-            fish.y = constrain(fish.y, 45, 198);
+            fish.y = constrain(fish.y, kAquariumMinFishY, kAquariumMaxFishY);
         }
     }
+    healAquariumSpacingIfCollapsed();
     const bool online = peerOnline();
     const bool isHost = localIsHost();
     bool shouldSendSync = false;
@@ -1453,6 +1510,10 @@ void sendAquariumSync() {
     if (!peerOnline() || !localIsHost()) {
         return;
     }
+    if (!aquariumInitialized) {
+        initAquarium();
+    }
+    healAquariumSpacingIfCollapsed();
     AquariumSyncPacket packet{makeHeader(MessageType::AquariumSync),
                               ++aquariumSyncCounter, {}};
     for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
@@ -1462,7 +1523,7 @@ void sendAquariumSync() {
             aquariumFish[i].vx,
             aquariumFish[i].vy,
             aquariumFish[i].glyph,
-            0,
+            aquariumFish[i].hunger,
         };
     }
     esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
@@ -1487,12 +1548,24 @@ void processAquariumSync(const uint8_t* address, const uint8_t* data, int length
     if (!aquariumInitialized) {
         initAquarium();
     }
+    int16_t syncX[kAquariumFishCount]{};
+    int16_t syncY[kAquariumFishCount]{};
+    for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
+        syncX[i] = packet.fish[i].x;
+        syncY[i] = packet.fish[i].y;
+    }
+    if (aquariumSnapshotLooksCollapsed(syncX, syncY, kAquariumFishCount)) {
+        Serial.printf("AQUARIUM rx sync collapsed id=%lu\n",
+                      static_cast<unsigned long>(packet.syncId));
+        return;
+    }
     for (uint8_t i = 0; i < kAquariumFishCount; ++i) {
         aquariumFish[i].x = packet.fish[i].x;
         aquariumFish[i].y = packet.fish[i].y;
         aquariumFish[i].vx = packet.fish[i].vx;
         aquariumFish[i].vy = packet.fish[i].vy;
         aquariumFish[i].glyph = packet.fish[i].glyph;
+        aquariumFish[i].hunger = packet.fish[i].hunger;
     }
     markAquariumDirtyIfVisible();
     Serial.printf("AQUARIUM rx sync id=%lu\n",
