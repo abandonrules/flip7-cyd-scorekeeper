@@ -46,6 +46,12 @@ pio run
 
 Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-only keys because CI firmware is not installed on the physical pair.
 
+## Power-saving
+
+The firmware shows the paired Aquarium idle screen after 30 seconds without local touch input, then turns the CYD backlight off after 60 seconds without local touch input. The ESP32 stays awake, so ESP-NOW pairing, heartbeats, pending delivery retries, and game state remain in RAM. The first touch wakes the display, redraws the current screen, and is consumed so it does not accidentally make a game move.
+
+Power-saving waits until pending synchronized game work is idle before starting the idle Aquarium or turning the backlight off.
+
 ## Companion hardware
 
 The working CircuitPython keypad program from the companion Adafruit MacroPad
