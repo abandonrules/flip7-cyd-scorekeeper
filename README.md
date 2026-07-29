@@ -14,6 +14,8 @@ It currently ships:
 
 - **Planet Slide** — a synchronized 3×3 sliding puzzle using planet symbols.
 - **Greek Slide** — a synchronized 4×3 sliding puzzle using Greek symbols.
+- **Periodic Order** — a synchronized 4×3 sliding puzzle where 11 random
+  chemical elements must be arranged by ascending atomic number.
 - **Mastermind** — a two-player codebreaker match with four pegs, six colors,
   duplicate-aware feedback, ten guesses, automatic role swaps, and match score.
 - **Aquarium** — a shared idle/waiting screen with synced fish, feeding, hunger,
@@ -174,7 +176,6 @@ on the real displays.
 
 Notable open issues:
 
-- [#28 Periodic table atomic-number ordering puzzle](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/28)
 - [#23 Mastermind guesser screen redesign](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/23)
 - [#11 Harden ESP-NOW replay protection across receiver restarts](https://github.com/abandonrules/flip7-cyd-scorekeeper/issues/11)
 

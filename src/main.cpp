@@ -466,6 +466,17 @@ void drawPlanetSymbol(uint8_t planet, int16_t cx, int16_t cy,
     }
 }
 
+void drawElementTile(uint8_t atomicNumber, int16_t cx, int16_t cy,
+                     uint16_t color, uint16_t background) {
+    char number[5];
+    snprintf(number, sizeof(number), "%u", atomicNumber);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(color, background);
+    display.drawString(periodicElementSymbol(atomicNumber), cx, cy - 8, 4);
+    display.setTextColor(TFT_LIGHTGREY, background);
+    display.drawString(number, cx, cy + 18, 2);
+}
+
 uint16_t tileColor(uint8_t tile) {
     constexpr uint16_t colors[] = {
         TFT_DARKCYAN, TFT_MAROON, TFT_DARKGREEN, TFT_PURPLE,
@@ -820,15 +831,20 @@ void renderHome(bool online, bool deliveryPending) {
         display.drawString("GREEK", 237, 111, 4);
         display.drawString("11 PIECES / 4x3", 237, 147, 2);
 
-        display.fillRoundRect(10, 185, 145, 55, 10, TFT_MAROON);
-        display.drawRoundRect(10, 185, 145, 55, 10, TFT_WHITE);
+        display.fillRoundRect(10, 185, 93, 55, 10, TFT_MAROON);
+        display.drawRoundRect(10, 185, 93, 55, 10, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_MAROON);
-        display.drawString("MASTERMIND", 82, 212, 2);
+        display.drawString("MIND", 56, 212, 2);
 
-        display.fillRoundRect(165, 185, 145, 55, 10, TFT_BLUE);
-        display.drawRoundRect(165, 185, 145, 55, 10, TFT_WHITE);
+        display.fillRoundRect(113, 185, 94, 55, 10, TFT_DARKCYAN);
+        display.drawRoundRect(113, 185, 94, 55, 10, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+        display.drawString("ELEMENTS", 160, 212, 2);
+
+        display.fillRoundRect(217, 185, 93, 55, 10, TFT_BLUE);
+        display.drawRoundRect(217, 185, 93, 55, 10, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_BLUE);
-        display.drawString("AQUARIUM", 237, 212, 2);
+        display.drawString("AQUA", 263, 212, 2);
     } else {
         renderAquarium("CONNECT PEER", false);
     }
@@ -839,9 +855,13 @@ void renderPuzzle(bool online, const PuzzleState& game,
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
-    display.drawString(game.theme == PuzzleTheme::Planets ? "PLANET SLIDE"
-                                                          : "GREEK SLIDE",
-                       145, 13, 4);
+    const char* title = "GREEK SLIDE";
+    if (game.theme == PuzzleTheme::Planets) {
+        title = "PLANET SLIDE";
+    } else if (game.theme == PuzzleTheme::Elements) {
+        title = "ELEMENT ORDER";
+    }
+    display.drawString(title, 145, 13, 4);
     renderExitButton(online);
 
     const PuzzleLayout layout = puzzleLayout(game);
@@ -870,7 +890,11 @@ void renderPuzzle(bool online, const PuzzleState& game,
         const int16_t centerX = x + layout.tileWidth / 2;
         const int16_t centerY = y + layout.tileHeight / 2;
         const uint16_t symbolColor = locked ? TFT_GREEN : TFT_WHITE;
-        if (game.theme == PuzzleTheme::Planets) {
+        const uint16_t symbolBackground = locked ? TFT_NAVY : tileColor(tile);
+        if (game.theme == PuzzleTheme::Elements) {
+            drawElementTile(periodicElementForTile(game, tile), centerX,
+                            centerY, symbolColor, symbolBackground);
+        } else if (game.theme == PuzzleTheme::Planets) {
             drawPlanetSymbol(tile, centerX, centerY, symbolColor);
         } else {
             drawGreekSymbol(tile, centerX, centerY, symbolColor);
@@ -906,10 +930,13 @@ void renderComplete(bool online, const PuzzleState& game) {
     display.setTextColor(TFT_GREEN, TFT_NAVY);
     display.drawString("PUZZLE COMPLETE!", display.width() / 2, 96, 4);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
-    display.drawString(game.theme == PuzzleTheme::Planets
-                           ? "All eight planets are aligned"
-                           : "All Greek symbols are home",
-                       display.width() / 2, 138, 2);
+    const char* message = "All Greek symbols are home";
+    if (game.theme == PuzzleTheme::Planets) {
+        message = "All eight planets are aligned";
+    } else if (game.theme == PuzzleTheme::Elements) {
+        message = "Elements are in atomic order";
+    }
+    display.drawString(message, display.width() / 2, 138, 2);
     renderExitButton(online);
 }
 
@@ -2161,9 +2188,11 @@ void handleTouch(uint32_t now) {
                 startPuzzle({4, 3, PuzzleTheme::Greek});
             }
         } else if (localIsHost() && peerOnline() && y >= 185 && y < 240) {
-            if (x >= 10 && x < 155) {
+            if (x >= 10 && x < 103) {
                 startMastermind();
-            } else if (x >= 165 && x < 310) {
+            } else if (x >= 113 && x < 207) {
+                startPuzzle({4, 3, PuzzleTheme::Elements});
+            } else if (x >= 217 && x < 310) {
                 setAquariumMode(true);
                 sendAquariumEvent(AquariumEventType::Start);
                 sendAquariumSync();
