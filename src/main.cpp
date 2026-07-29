@@ -14,6 +14,7 @@
 #include "generated_peer_keys.h"
 #include "protocol.h"
 #include "puzzle_logic.h"
+#include "power_save.h"
 
 namespace {
 constexpr uint8_t kBacklightPin = 21;
@@ -164,6 +165,7 @@ bool sendMastermindFullStateSoon = false;
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
+PowerSaveState powerSave{0, false, false};
 
 constexpr uint8_t kAquariumFishCount = kAquariumSyncFishCount;
 constexpr uint8_t kAquariumFoodCount = 8;
@@ -559,6 +561,13 @@ void setAquariumMode(bool active) {
 void sendAquariumSync();
 
 void stepAquarium(uint32_t now) {
+    bool powerSaveActive = false;
+    portENTER_CRITICAL(&gameMux);
+    powerSaveActive = powerSave.active;
+    portEXIT_CRITICAL(&gameMux);
+    if (powerSaveActive) {
+        return;
+    }
     if (!aquariumInitialized) {
         initAquarium();
     }
@@ -1714,6 +1723,87 @@ void sendMastermindStateRequest() {
                  sizeof(packet));
 }
 
+void applyBacklightPowerSave(bool active) {
+    digitalWrite(kBacklightPin,
+                 powerSaveBacklightLevel(active) == 0 ? LOW : HIGH);
+}
+
+bool powerSaveBlocked() {
+    bool blocked = false;
+    portENTER_CRITICAL(&gameMux);
+    blocked = pendingDelivery.active || pendingAck.active || reconciliationPending ||
+              sendFullStateSoon || requestStateSoon ||
+              mastermindPendingDelivery.active || mastermindPendingAck.active ||
+              mastermindReconciliationPending || sendMastermindFullStateSoon ||
+              mastermindRequestStateSoon;
+    portEXIT_CRITICAL(&gameMux);
+    return blocked;
+}
+
+void startIdleAquarium(uint32_t now) {
+    const bool blocked = powerSaveBlocked();
+    const bool online = peerOnline();
+    const bool isHost = localIsHost();
+    bool started = false;
+    bool sendStart = false;
+    portENTER_CRITICAL(&gameMux);
+    if (screenMode == ScreenMode::Home &&
+        shouldStartIdleAquarium(now, powerSave.lastInteractionMs,
+                                powerSave.idleAquariumStarted,
+                                powerSave.active, blocked,
+                                kPowerSaveAquariumLeadInMs)) {
+        powerSave.idleAquariumStarted = true;
+        if (isHost && online) {
+            screenMode = ScreenMode::Aquarium;
+            sendStart = true;
+        }
+        displayDirty = true;
+        started = true;
+    }
+    portEXIT_CRITICAL(&gameMux);
+    if (sendStart) {
+        sendAquariumEvent(AquariumEventType::Start);
+        sendAquariumSync();
+    }
+    if (started) {
+        Serial.printf("POWER-SAVE aquarium idle_ms=%lu\n",
+                      static_cast<unsigned long>(now - powerSave.lastInteractionMs));
+    }
+}
+
+void enterPowerSave(uint32_t now) {
+    const bool blocked = powerSaveBlocked();
+    bool changed = false;
+    portENTER_CRITICAL(&gameMux);
+    if (shouldEnterPowerSave(now, powerSave.lastInteractionMs, powerSave.active,
+                             blocked, kPowerSaveIdleTimeoutMs)) {
+        powerSave.active = true;
+        changed = true;
+    }
+    portEXIT_CRITICAL(&gameMux);
+    if (changed) {
+        applyBacklightPowerSave(true);
+        Serial.printf("POWER-SAVE entered idle_ms=%lu\n",
+                      static_cast<unsigned long>(now - powerSave.lastInteractionMs));
+    }
+}
+
+bool wakePowerSave(uint32_t now) {
+    bool changed = false;
+    portENTER_CRITICAL(&gameMux);
+    changed = powerSave.active;
+    notePowerSaveActivity(powerSave, now);
+    if (changed) {
+        displayDirty = true;
+    }
+    portEXIT_CRITICAL(&gameMux);
+    if (changed) {
+        applyBacklightPowerSave(false);
+        Serial.println("POWER-SAVE woke touch");
+    }
+    return changed;
+}
+
 void refreshPeerIdentity() {
     uint32_t peerId = 0;
     portENTER_CRITICAL(&linkMux);
@@ -1937,7 +2027,7 @@ void handleMastermindTouch(int16_t x, int16_t y) {
     }
 }
 
-void handleTouch() {
+void handleTouch(uint32_t now) {
     int16_t x = 0;
     int16_t y = 0;
     TS_Point point;
@@ -1950,6 +2040,9 @@ void handleTouch() {
         return;
     }
     touchWasDown = true;
+    if (wakePowerSave(now)) {
+        return;
+    }
     Serial.printf("TOUCH raw=%d,%d screen=%d,%d\n", point.x, point.y, x, y);
 
     ScreenMode mode;
@@ -2224,6 +2317,7 @@ void setup() {
         bootSessionId = esp_random();
     } while (bootSessionId == 0);
     lastEspNowAttemptMs = millis();
+    powerSave.lastInteractionMs = lastEspNowAttemptMs;
     protocolMutex = xSemaphoreCreateMutex();
     espNowReady = protocolMutex != nullptr && startEspNow();
     Serial.printf("TWO-PLAYER GAMES ready mac=%s id=%08lX esp-now=%s\n",
@@ -2247,7 +2341,9 @@ void loop() {
     serviceProtocol(now);
     advanceMastermindRoundIfReady(now);
     stepAquarium(now);
-    handleTouch();
+    handleTouch(now);
+    startIdleAquarium(now);
+    enterPowerSave(now);
 
     const bool online = peerOnline();
     if (online != lastOnline) {
@@ -2280,8 +2376,10 @@ void loop() {
         reconciliationPending = false;
         displayDirty = true;
     }
-    shouldRender = displayDirty;
-    displayDirty = false;
+    shouldRender = displayDirty && !powerSave.active;
+    if (shouldRender) {
+        displayDirty = false;
+    }
     shouldLogRemote = remoteLogPending;
     remoteLogPending = false;
     shouldLogAck = ackLogPending;
