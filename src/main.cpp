@@ -84,8 +84,8 @@ struct LinkState {
     uint32_t peerSessionId;
     uint32_t retiredSessions[kRetiredSessionCapacity];
     size_t retiredSessionCount;
-    uint32_t peerSequences[11];
-    bool sequenceSeen[11];
+    uint32_t peerSequences[15];
+    bool sequenceSeen[15];
     uint8_t peerAddress[6];
 };
 
@@ -291,7 +291,7 @@ bool matchesBoundPeer(const uint8_t* address, uint32_t senderId) {
 bool acceptPeerSequence(MessageType type, uint32_t sessionId,
                         uint32_t sequence) {
     const uint8_t index = static_cast<uint8_t>(type);
-    if (index >= 11) {
+    if (index >= 15) {
         return false;
     }
     portENTER_CRITICAL(&linkMux);
@@ -1622,6 +1622,61 @@ void sendMastermindStateRequest() {
     xSemaphoreGive(protocolMutex);
 }
 
+void sendCountdownStateIfCurrent(MessageType type,
+                                 const CountdownWireState& state) {
+    CountdownStatePacket packet{makeHeader(type), state};
+    if (protocolMutex == nullptr ||
+        xSemaphoreTake(protocolMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
+    portENTER_CRITICAL(&gameMux);
+    const bool snapshotMatches =
+        countdownStateReady && sameCountdownWireState(countdownState, state);
+    const bool terminalDelivery =
+        type == MessageType::CountdownState &&
+        state.phase == CountdownWirePhase::Exited;
+    const bool shouldSend =
+        shouldSendActiveGameState(activeGame, ActiveGameKind::Countdown,
+                                  state.gameId, snapshotMatches,
+                                  terminalDelivery);
+    portEXIT_CRITICAL(&gameMux);
+    if (shouldSend) {
+        esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
+                     sizeof(packet));
+    }
+    xSemaphoreGive(protocolMutex);
+}
+
+void sendCountdownAck(const CountdownPendingAck& ack) {
+    CountdownAckPacket packet{makeHeader(MessageType::CountdownAck),
+                              ack.targetBoardId,
+                              ack.gameId,
+                              ack.revision,
+                              ack.stateDigest,
+                              ack.acknowledgedType,
+                              {0, 0, 0}};
+    esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
+                 sizeof(packet));
+}
+
+void sendCountdownStateRequest() {
+    uint32_t gameId = 0;
+    uint32_t revision = 0;
+    uint32_t digest = 0;
+    portENTER_CRITICAL(&gameMux);
+    if (countdownStateReady) {
+        gameId = countdownState.gameId;
+        revision = countdownState.revision;
+        digest = countdownStateDigest(countdownState);
+    }
+    portEXIT_CRITICAL(&gameMux);
+    CountdownStateRequestPacket packet{
+        makeHeader(MessageType::CountdownRequestState), gameId, revision,
+        digest};
+    esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
+                 sizeof(packet));
+}
+
 void refreshPeerIdentity() {
     uint32_t peerId = 0;
     portENTER_CRITICAL(&linkMux);
@@ -1782,8 +1837,16 @@ void startCountdown() {
     }
     countdownEngine.resetMatch(std::min(boardId, gamePeerBoardId),
                                std::max(boardId, gamePeerBoardId));
+    const CountdownWireState started = makeCountdownMatch(
+        std::min(boardId, gamePeerBoardId),
+        std::max(boardId, gamePeerBoardId), nextGameId);
+    countdownState = started;
+    countdownStateReady = true;
     activeGame = {nextGameId, ActiveGameKind::Countdown};
     screenMode = ScreenMode::Countdown;
+    countdownPendingDelivery =
+        CountdownPendingDelivery{true, MessageType::CountdownFullState,
+                                 started, 0};
     displayDirty = true;
     portEXIT_CRITICAL(&gameMux);
     Serial.printf("COUNTDOWN started id=%lu\n",
@@ -2036,6 +2099,9 @@ void serviceProtocol(uint32_t now) {
     MastermindPendingDelivery mastermindDelivery{};
     MastermindPendingAck mastermindAck{};
     MastermindState mastermindFullState{};
+    CountdownPendingDelivery countdownDelivery{};
+    CountdownPendingAck countdownAck{};
+    CountdownWireState countdownFullState{};
     bool sendDelivery = false;
     bool sendAckNow = false;
     bool sendFullNow = false;
@@ -2044,10 +2110,16 @@ void serviceProtocol(uint32_t now) {
     bool sendMastermindAckNow = false;
     bool sendMastermindFullNow = false;
     bool requestMastermindNow = false;
+    bool sendCountdownDeliveryNow = false;
+    bool sendCountdownAckNow = false;
+    bool sendCountdownFullNow = false;
+    bool requestCountdownNow = false;
     portENTER_CRITICAL(&gameMux);
     const bool puzzleActive = activeGame.kind == ActiveGameKind::Puzzle;
     const bool mastermindActive =
         activeGame.kind == ActiveGameKind::Mastermind;
+    const bool countdownActive =
+        activeGame.kind == ActiveGameKind::Countdown;
     const bool discoveringGame = activeGame.kind == ActiveGameKind::Home;
     if (pendingDelivery.active &&
         now - pendingDelivery.lastSentMs >= kDeliveryRetryMs) {
@@ -2097,7 +2169,32 @@ void serviceProtocol(uint32_t now) {
         mastermindRequestStateSoon = false;
         requestMastermindNow = true;
     }
-    if (requestNow || requestMastermindNow) {
+    if (countdownPendingDelivery.active &&
+        now - countdownPendingDelivery.lastSentMs >= kDeliveryRetryMs) {
+        countdownPendingDelivery.lastSentMs = now;
+        countdownDelivery = countdownPendingDelivery;
+        sendCountdownDeliveryNow = true;
+    }
+    if (countdownPendingAck.active) {
+        countdownAck = countdownPendingAck;
+        countdownPendingAck.active = false;
+        sendCountdownAckNow = true;
+    }
+    if (sendCountdownFullStateSoon && countdownStateReady &&
+        countdownActive) {
+        sendCountdownFullStateSoon = false;
+        countdownFullState = countdownState;
+        sendCountdownFullNow = true;
+    }
+    if ((countdownActive || discoveringGame) &&
+        (countdownRequestStateSoon ||
+         (gamePeerBoardId != 0 &&
+          (!countdownStateReady || countdownReconciliationPending) &&
+          now - lastStateRequestMs >= kStateRequestIntervalMs))) {
+        countdownRequestStateSoon = false;
+        requestCountdownNow = true;
+    }
+    if (requestNow || requestMastermindNow || requestCountdownNow) {
         lastStateRequestMs = now;
     }
     portEXIT_CRITICAL(&gameMux);
@@ -2127,6 +2224,20 @@ void serviceProtocol(uint32_t now) {
     }
     if (requestMastermindNow) {
         sendMastermindStateRequest();
+    }
+    if (sendCountdownDeliveryNow) {
+        sendCountdownStateIfCurrent(countdownDelivery.type,
+                                    countdownDelivery.state);
+    }
+    if (sendCountdownAckNow) {
+        sendCountdownAck(countdownAck);
+    }
+    if (sendCountdownFullNow) {
+        sendCountdownStateIfCurrent(MessageType::CountdownFullState,
+                                    countdownFullState);
+    }
+    if (requestCountdownNow) {
+        sendCountdownStateRequest();
     }
 }
 
