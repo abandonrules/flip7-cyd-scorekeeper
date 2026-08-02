@@ -107,6 +107,7 @@ enum class ActiveGameKind : uint8_t {
     Home = 0,
     Puzzle = 1,
     Mastermind = 2,
+    Countdown = 3,
 };
 
 enum class PacketOrigin : uint8_t {
