@@ -931,7 +931,12 @@ void processStatePacket(const uint8_t* address, const uint8_t* data,
         }
     }
     if (accepted) {
-        activeGame = {puzzleState.gameId, ActiveGameKind::Puzzle};
+        activeGame = {
+            puzzleState.gameId,
+            puzzleState.phase == PuzzlePhase::Exited
+                ? ActiveGameKind::Home
+                : ActiveGameKind::Puzzle,
+        };
         mastermindPendingDelivery.active = false;
         mastermindReconciliationPending = false;
         mastermindRequestStateSoon = false;
@@ -1422,7 +1427,7 @@ int8_t puzzlePositionAt(const PuzzleState& game, int16_t x, int16_t y) {
 void startPuzzle(const PuzzleSpec& spec) {
     PuzzleState started{};
     portENTER_CRITICAL(&gameMux);
-    if (activeGame.kind != ActiveGameKind::Home) {
+    if (screenMode != ScreenMode::Home && activeGame.kind != ActiveGameKind::Home) {
         portEXIT_CRITICAL(&gameMux);
         return;
     }
@@ -1459,7 +1464,7 @@ bool commitMastermindState(const MastermindState& next, MessageType type,
           !mastermindStateReady ||
           !sameMastermindState(mastermindState, *expected))) ||
         (expected == nullptr &&
-         (activeGame.kind != ActiveGameKind::Home ||
+         ((screenMode != ScreenMode::Home && activeGame.kind != ActiveGameKind::Home) ||
           next.gameId <= activeGame.epoch))) {
         portEXIT_CRITICAL(&gameMux);
         return false;
