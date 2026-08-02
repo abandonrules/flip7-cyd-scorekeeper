@@ -14,6 +14,7 @@
 #include "generated_peer_keys.h"
 #include "protocol.h"
 #include "puzzle_logic.h"
+#include "flip7/countdown_engine.hpp"
 
 namespace {
 constexpr uint8_t kBacklightPin = 21;
@@ -72,7 +73,7 @@ portMUX_TYPE linkMux = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE gameMux = portMUX_INITIALIZER_UNLOCKED;
 SemaphoreHandle_t protocolMutex = nullptr;
 
-enum class ScreenMode : uint8_t { Home, Puzzle, Complete, Mastermind };
+enum class ScreenMode : uint8_t { Home, Puzzle, Complete, Mastermind, Countdown };
 
 struct LinkState {
     uint32_t sent;
@@ -120,6 +121,22 @@ struct MastermindPendingAck {
     MessageType acknowledgedType;
 };
 
+struct CountdownPendingDelivery {
+    bool active;
+    MessageType type;
+    CountdownWireState state;
+    uint32_t lastSentMs;
+};
+
+struct CountdownPendingAck {
+    bool active;
+    uint32_t targetBoardId;
+    uint32_t gameId;
+    uint32_t revision;
+    uint32_t stateDigest;
+    MessageType acknowledgedType;
+};
+
 LinkState linkState{};
 PuzzleState puzzleState{};
 PendingDelivery pendingDelivery{};
@@ -129,6 +146,10 @@ MastermindPendingDelivery mastermindPendingDelivery{};
 MastermindPendingAck mastermindPendingAck{};
 MastermindCode draftCode{{1, 1, 1, 1}};
 MastermindCode lastSubmittedGuess{{1, 1, 1, 1}};
+flip7::countdown::CountdownMatchEngine countdownEngine(0, 0, 0);
+CountdownWireState countdownState{};
+CountdownPendingDelivery countdownPendingDelivery{};
+CountdownPendingAck countdownPendingAck{};
 ScreenMode screenMode = ScreenMode::Home;
 ActiveGameClock activeGame{kNoActiveGameEpoch, ActiveGameKind::Home};
 uint32_t boardId = 0;
@@ -161,6 +182,10 @@ bool mastermindStateReady = false;
 bool mastermindRequestStateSoon = false;
 bool mastermindReconciliationPending = false;
 bool sendMastermindFullStateSoon = false;
+bool countdownStateReady = false;
+bool countdownRequestStateSoon = false;
+bool countdownReconciliationPending = false;
+bool sendCountdownFullStateSoon = false;
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
@@ -726,20 +751,55 @@ void renderMastermind(bool online, const MastermindState& state,
     display.drawString("GUESS", 257, 204, 4);
 }
 
+void renderCountdown(bool online, const CountdownWireState& state) {
+    display.fillScreen(TFT_NAVY);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_WHITE, TFT_NAVY);
+    display.drawString("COUNTDOWN MATCH", 145, 20, 4);
+    renderExitButton(online);
+
+    display.setTextColor(TFT_YELLOW, TFT_NAVY);
+    display.drawString("SYNCHRONIZED NUM / LET / CON", 160, 55, 2);
+
+    // Host & Guest Scores
+    display.fillRoundRect(20, 85, 130, 80, 8, TFT_DARKCYAN);
+    display.drawRoundRect(20, 85, 130, 80, 8, TFT_WHITE);
+    display.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+    display.drawString("HOST", 85, 105, 2);
+    display.drawNumber(state.hostScore, 85, 135, 4);
+
+    display.fillRoundRect(170, 85, 130, 80, 8, TFT_MAGENTA);
+    display.drawRoundRect(170, 85, 130, 80, 8, TFT_WHITE);
+    display.setTextColor(TFT_WHITE, TFT_MAGENTA);
+    display.drawString("GUEST", 235, 105, 2);
+    display.drawNumber(state.guestScore, 235, 135, 4);
+
+    display.setTextColor(TFT_GREEN, TFT_NAVY);
+    if (boardId == state.hostBoardId) {
+        display.drawString("HOST PLAYER (IN CONTROL)", 160, 195, 2);
+    } else {
+        display.drawString("GUEST PLAYER (SYNCED)", 160, 195, 2);
+    }
+}
+
 void renderScreen() {
     PuzzleState game{};
     MastermindState mastermind{};
+    CountdownWireState countdown{};
     ScreenMode mode;
     bool ready;
     bool mastermindReady;
+    bool countdownReady;
     bool deliveryPending;
     bool mastermindDeliveryPending;
     portENTER_CRITICAL(&gameMux);
     game = puzzleState;
     mastermind = mastermindState;
+    countdown = countdownState;
     mode = screenMode;
     ready = stateReady;
     mastermindReady = mastermindStateReady;
+    countdownReady = countdownStateReady;
     deliveryPending = pendingDelivery.active;
     mastermindDeliveryPending = mastermindPendingDelivery.active;
     portEXIT_CRITICAL(&gameMux);
@@ -751,6 +811,8 @@ void renderScreen() {
         renderComplete(online, game);
     } else if (mode == ScreenMode::Mastermind && mastermindReady) {
         renderMastermind(online, mastermind, mastermindDeliveryPending);
+    } else if (mode == ScreenMode::Countdown && countdownReady) {
+        renderCountdown(online, countdown);
     } else if (mode == ScreenMode::Puzzle && ready) {
         renderPuzzle(online, game, deliveryPending);
     } else {
@@ -781,6 +843,24 @@ void prepareMastermindDraft(const MastermindState& state) {
     } else {
         draftCode = MastermindCode{{1, 1, 1, 1}};
     }
+}
+
+bool validCountdownIdentity(const CountdownWireState& state) {
+    const uint32_t host = std::min(boardId, gamePeerBoardId);
+    const uint32_t guest = std::max(boardId, gamePeerBoardId);
+    return state.hostBoardId == host && state.guestBoardId == guest;
+}
+
+void queueCountdownAck(uint32_t targetBoardId,
+                       const CountdownWireState& state,
+                       MessageType acknowledgedType) {
+    countdownPendingAck = CountdownPendingAck{
+        true, targetBoardId, state.gameId, state.revision,
+        countdownStateDigest(state), acknowledgedType};
+}
+
+void prepareMastermindDraft() {
+    draftCode = MastermindCode{{1, 1, 1, 1}};
     selectedPeg = 0;
 }
 
@@ -1182,6 +1262,172 @@ void processMastermindStateRequest(const uint8_t* address,
     portEXIT_CRITICAL(&gameMux);
 }
 
+void processCountdownStatePacket(const uint8_t* address,
+                                 const uint8_t* data, int length,
+                                 MessageType type) {
+    if (length != sizeof(CountdownStatePacket)) {
+        return;
+    }
+    CountdownStatePacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    if (!validHeader(packet.header, type) ||
+        !matchesBoundPeer(address, packet.header.senderId) ||
+        !isValidCountdownWireState(packet.state) ||
+        !validCountdownIdentity(packet.state) ||
+        !acceptPeerSequence(type, packet.header.sessionId,
+                            packet.header.sequence)) {
+        return;
+    }
+
+    bool accepted = false;
+    bool duplicate = false;
+    portENTER_CRITICAL(&gameMux);
+    const bool terminal = packet.state.phase == CountdownWirePhase::Exited;
+    if (!shouldAcceptGameState(activeGame, ActiveGameKind::Countdown,
+                               packet.state.gameId, terminal)) {
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
+    duplicate = countdownStateReady &&
+                sameCountdownWireState(countdownState, packet.state);
+    const bool exitSignalApplied =
+        type == MessageType::CountdownState && terminal &&
+        countdownStateReady &&
+        applyCountdownExitSignal(countdownState, packet.state,
+                                 packet.header.senderId);
+    if (exitSignalApplied) {
+        countdownPendingDelivery.active = false;
+        countdownReconciliationPending = false;
+        accepted = true;
+    } else {
+        const CountdownVersionOrder order =
+            countdownStateReady
+                ? compareCountdownVersion(countdownState, packet.state)
+                : CountdownVersionOrder::Newer;
+        if (type == MessageType::CountdownFullState) {
+            const bool equalConflict = countdownStateReady &&
+                order == CountdownVersionOrder::Same && !duplicate;
+            const bool peerIsAuthority = packet.header.senderId < boardId;
+            if (!countdownStateReady ||
+                order == CountdownVersionOrder::Newer ||
+                (equalConflict && peerIsAuthority)) {
+                countdownState = packet.state;
+                countdownStateReady = true;
+                countdownPendingDelivery.active = false;
+                countdownReconciliationPending = false;
+                accepted = true;
+            } else if (order == CountdownVersionOrder::Older ||
+                       (equalConflict && !peerIsAuthority)) {
+                sendCountdownFullStateSoon = true;
+            }
+        } else if (type == MessageType::CountdownState) {
+            if (!countdownStateReady ||
+                (packet.state.gameId == countdownState.gameId &&
+                 packet.state.revision == countdownState.revision + 1)) {
+                countdownState = packet.state;
+                countdownStateReady = true;
+                accepted = true;
+            } else if (!duplicate) {
+                countdownRequestStateSoon = true;
+                countdownReconciliationPending = true;
+            }
+        }
+    }
+    if ((accepted || duplicate) && countdownPendingDelivery.active &&
+        isCountdownDeliverySuperseded(countdownPendingDelivery.state,
+                                      packet.state)) {
+        countdownPendingDelivery.active = false;
+    }
+    if (accepted) {
+        pendingDelivery.active = false;
+        reconciliationPending = false;
+        requestStateSoon = false;
+        sendFullStateSoon = false;
+        sendMastermindFullStateSoon = false;
+        sendCountdownFullStateSoon = false;
+        activeGame = {
+            countdownState.gameId,
+            countdownState.phase == CountdownWirePhase::Exited
+                ? ActiveGameKind::Home
+                : ActiveGameKind::Countdown,
+        };
+        screenMode = countdownState.phase == CountdownWirePhase::Exited
+                         ? ScreenMode::Home
+                         : ScreenMode::Countdown;
+        countdownReconciliationPending = false;
+        displayDirty = true;
+    }
+    if (accepted || duplicate) {
+        queueCountdownAck(packet.header.senderId, packet.state, type);
+    }
+    portEXIT_CRITICAL(&gameMux);
+}
+
+void processCountdownAckPacket(const uint8_t* address,
+                               const uint8_t* data, int length) {
+    if (length != sizeof(CountdownAckPacket)) {
+        return;
+    }
+    CountdownAckPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    if (!validHeader(packet.header, MessageType::CountdownAck) ||
+        packet.targetBoardId != boardId ||
+        !matchesBoundPeer(address, packet.header.senderId) ||
+        !acceptPeerSequence(MessageType::CountdownAck,
+                            packet.header.sessionId,
+                            packet.header.sequence)) {
+        return;
+    }
+    portENTER_CRITICAL(&gameMux);
+    if (countdownPendingDelivery.active &&
+        countdownPendingDelivery.type == packet.acknowledgedType &&
+        countdownPendingDelivery.state.gameId == packet.gameId &&
+        countdownPendingDelivery.state.revision == packet.revision &&
+        countdownStateDigest(countdownPendingDelivery.state) ==
+            packet.stateDigest) {
+        countdownPendingDelivery.active = false;
+        displayDirty = true;
+    }
+    portEXIT_CRITICAL(&gameMux);
+}
+
+void processCountdownStateRequest(const uint8_t* address,
+                                  const uint8_t* data, int length) {
+    if (length != sizeof(CountdownStateRequestPacket)) {
+        return;
+    }
+    CountdownStateRequestPacket packet{};
+    memcpy(&packet, data, sizeof(packet));
+    if (!validHeader(packet.header, MessageType::CountdownRequestState) ||
+        !matchesBoundPeer(address, packet.header.senderId) ||
+        !acceptPeerSequence(MessageType::CountdownRequestState,
+                            packet.header.sessionId,
+                            packet.header.sequence)) {
+        return;
+    }
+    portENTER_CRITICAL(&gameMux);
+    if (countdownStateReady && screenMode == ScreenMode::Countdown) {
+        const bool remoteOlder = packet.gameId < countdownState.gameId ||
+            (packet.gameId == countdownState.gameId &&
+             packet.revision < countdownState.revision);
+        const bool remoteNewer = packet.gameId > countdownState.gameId ||
+            (packet.gameId == countdownState.gameId &&
+             packet.revision > countdownState.revision);
+        const bool divergent = packet.gameId == countdownState.gameId &&
+            packet.revision == countdownState.revision &&
+            packet.stateDigest != countdownStateDigest(countdownState);
+        if (remoteOlder || (divergent && localIsHost())) {
+            sendCountdownFullStateSoon = true;
+        } else if (remoteNewer || (divergent && !localIsHost())) {
+            countdownRequestStateSoon = true;
+            countdownReconciliationPending = true;
+        } else {
+            countdownReconciliationPending = false;
+        }
+    }
+    portEXIT_CRITICAL(&gameMux);
+}
+
 void onPacketReceived(const uint8_t* address, const uint8_t* data, int length) {
     if (length < sizeof(PacketHeader)) {
         return;
@@ -1217,6 +1463,13 @@ void onPacketReceived(const uint8_t* address, const uint8_t* data, int length) {
         processMastermindAckPacket(address, data, length);
     } else if (header.type == MessageType::MastermindRequestState) {
         processMastermindStateRequest(address, data, length);
+    } else if (header.type == MessageType::CountdownState ||
+               header.type == MessageType::CountdownFullState) {
+        processCountdownStatePacket(address, data, length, header.type);
+    } else if (header.type == MessageType::CountdownAck) {
+        processCountdownAckPacket(address, data, length);
+    } else if (header.type == MessageType::CountdownRequestState) {
+        processCountdownStateRequest(address, data, length);
     }
     xSemaphoreGive(protocolMutex);
 }
@@ -1513,6 +1766,30 @@ void startMastermind() {
                   static_cast<unsigned long>(started.gameId));
 }
 
+void startCountdown() {
+    uint32_t nextGameId = kNoActiveGameEpoch;
+    portENTER_CRITICAL(&gameMux);
+    if (screenMode != ScreenMode::Home && activeGame.kind != ActiveGameKind::Home) {
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
+    nextGameId = nextActiveGameEpoch(
+        activeGame.epoch, stateReady ? puzzleState.gameId : 0,
+        mastermindStateReady ? mastermindState.gameId : 0);
+    if (nextGameId == kNoActiveGameEpoch) {
+        portEXIT_CRITICAL(&gameMux);
+        return;
+    }
+    countdownEngine.resetMatch(std::min(boardId, gamePeerBoardId),
+                               std::max(boardId, gamePeerBoardId));
+    activeGame = {nextGameId, ActiveGameKind::Countdown};
+    screenMode = ScreenMode::Countdown;
+    displayDirty = true;
+    portEXIT_CRITICAL(&gameMux);
+    Serial.printf("COUNTDOWN started id=%lu\n",
+                  static_cast<unsigned long>(nextGameId));
+}
+
 void handleMastermindEditorTouch(int16_t x, int16_t y,
                                  bool secretEntry) {
     if (secretEntry && y >= 65 && y <= 112) {
@@ -1620,6 +1897,42 @@ void handleTouch() {
     const bool exitPressed =
         x >= kExitX && x < kExitX + kExitWidth && y >= kExitY &&
         y < kExitY + kExitHeight;
+    if (mode == ScreenMode::Mastermind && exitPressed) {
+        MastermindState mastermindSnapshot{};
+        portENTER_CRITICAL(&gameMux);
+        mastermindSnapshot = mastermindState;
+        portEXIT_CRITICAL(&gameMux);
+        if (mastermindStateReady) {
+            MastermindState exited = mastermindSnapshot;
+            if (exitMastermindMatch(exited, boardId)) {
+                commitMastermindState(exited, MessageType::MastermindState,
+                                      &mastermindSnapshot);
+            }
+        }
+        return;
+    }
+    if (mode == ScreenMode::Countdown && exitPressed) {
+        CountdownWireState countdownSnapshot{};
+        portENTER_CRITICAL(&gameMux);
+        countdownSnapshot = countdownState;
+        portEXIT_CRITICAL(&gameMux);
+        if (countdownStateReady) {
+            CountdownWireState exited = countdownSnapshot;
+            if (exitCountdownMatch(exited, boardId)) {
+                portENTER_CRITICAL(&gameMux);
+                countdownState = exited;
+                countdownStateReady = true;
+                activeGame = {exited.gameId, ActiveGameKind::Home};
+                screenMode = ScreenMode::Home;
+                countdownPendingDelivery =
+                    CountdownPendingDelivery{true, MessageType::CountdownState,
+                                             exited, 0};
+                displayDirty = true;
+                portEXIT_CRITICAL(&gameMux);
+            }
+        }
+        return;
+    }
     if ((mode == ScreenMode::Puzzle || mode == ScreenMode::Complete) &&
         exitPressed) {
         PuzzleState exited{};
@@ -1654,12 +1967,7 @@ void handleTouch() {
                 if (x >= 10 && x < 155) {
                     startMastermind();
                 } else if (x >= 165 && x < 310) {
-                    // Start Countdown game mode
-                    portENTER_CRITICAL(&gameMux);
-                    activeGame = {nextActiveGameEpoch(activeGame.epoch, 0, 0), ActiveGameKind::Countdown};
-                    screenMode = ScreenMode::Home; // Ready
-                    displayDirty = true;
-                    portEXIT_CRITICAL(&gameMux);
+                    startCountdown();
                 }
             }
         }

@@ -81,6 +81,12 @@ struct CommandResult {
     bool accepted{false};
     std::string errorCode;
     std::string errorMessage;
+
+    CommandResult() = default;
+    CommandResult(bool acceptedValue, std::string errorCodeValue,
+                  std::string errorMessageValue)
+        : accepted(acceptedValue), errorCode(std::move(errorCodeValue)),
+          errorMessage(std::move(errorMessageValue)) {}
 };
 
 struct EventEnvelope {
@@ -204,6 +210,34 @@ public:
 
     const PlayerState& hostPlayer() const { return hostPlayer_; }
     const PlayerState& guestPlayer() const { return guestPlayer_; }
+
+    // Convenience read-only snapshot for UI rendering.
+    struct MatchState {
+        PlayerState hostPlayer;
+        PlayerState guestPlayer;
+        MatchPhase phase;
+        uint32_t roundNumber;
+    };
+    MatchState matchState() const {
+        return MatchState{hostPlayer_, guestPlayer_, phase_, roundNumber_};
+    }
+
+    bool isHost(uint32_t boardId) const { return boardId == hostBoardId_; }
+
+    // Reset the match to a fresh Setup state for a new host/guest pairing.
+    void resetMatch(uint32_t hostBoardId, uint32_t guestBoardId) {
+        hostBoardId_ = hostBoardId;
+        guestBoardId_ = guestBoardId;
+        hostPlayer_ = PlayerState{};
+        hostPlayer_.boardId = hostBoardId;
+        hostPlayer_.isHost = true;
+        guestPlayer_ = PlayerState{};
+        guestPlayer_.boardId = guestBoardId;
+        guestPlayer_.isHost = false;
+        phase_ = MatchPhase::Setup;
+        roundNumber_ = 0;
+        currentRoundType_ = RoundType::Numbers;
+    }
 
     void startNextRound(RoundType type, IRandomSource& random);
     

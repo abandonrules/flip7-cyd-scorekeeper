@@ -1,0 +1,7 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="Monitor Both CYDs" type="CompoundRunConfigurationType">
+    <toRun name="Monitor CYD — USB0" type="PythonConfigurationType" />
+    <toRun name="Monitor CYD — USB1" type="PythonConfigurationType" />
+    <method v="2" />
+  </configuration>
+</component>
