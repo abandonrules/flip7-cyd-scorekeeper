@@ -486,34 +486,38 @@ void renderHome(bool online, bool deliveryPending) {
     if (localIsHost() && online) {
         display.setTextColor(TFT_CYAN, TFT_NAVY);
         display.drawString("Choose a synchronized game", display.width() / 2,
-                           61, 2);
+                           55, 2);
 
-        // Slide puzzles row
-        display.fillRoundRect(10, 82, 145, 89, 10, TFT_PURPLE);
-        display.drawRoundRect(10, 82, 145, 89, 10, TFT_WHITE);
+        // Row 1: Slide puzzles
+        display.fillRoundRect(10, 75, 145, 65, 8, TFT_PURPLE);
+        display.drawRoundRect(10, 75, 145, 65, 8, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_PURPLE);
-        display.drawString("PLANETS", 82, 111, 4);
-        display.drawString("8 PIECES / 3x3", 82, 147, 2);
+        display.drawString("PLANETS", 82, 95, 4);
+        display.drawString("8 PIECES / 3x3", 82, 122, 2);
 
-        display.fillRoundRect(165, 82, 145, 89, 10, TFT_DARKGREEN);
-        display.drawRoundRect(165, 82, 145, 89, 10, TFT_WHITE);
+        display.fillRoundRect(165, 75, 145, 65, 8, TFT_DARKGREEN);
+        display.drawRoundRect(165, 75, 145, 65, 8, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-        display.drawString("GREEK", 237, 111, 4);
-        display.drawString("11 PIECES / 4x3", 237, 147, 2);
+        display.drawString("GREEK", 237, 95, 4);
+        display.drawString("11 PIECES / 4x3", 237, 122, 2);
 
-        // Mastermind row
-        display.fillRoundRect(45, 185, 230, 55, 10, TFT_MAROON);
-        display.drawRoundRect(45, 185, 230, 55, 10, TFT_WHITE);
+        // Row 2: Mastermind & Countdown
+        display.fillRoundRect(10, 150, 145, 65, 8, TFT_MAROON);
+        display.drawRoundRect(10, 150, 145, 65, 8, TFT_WHITE);
         display.setTextColor(TFT_WHITE, TFT_MAROON);
-        display.drawString("MASTERMIND", display.width() / 2, 212, 4);
+        display.drawString("MASTERMIND", 82, 170, 4);
+        display.drawString("CODE BREAKER", 82, 197, 2);
+
+        display.fillRoundRect(165, 150, 145, 65, 8, TFT_BLUE);
+        display.drawRoundRect(165, 150, 145, 65, 8, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_BLUE);
+        display.drawString("COUNTDOWN", 237, 170, 4);
+        display.drawString("NUM/LET/CON", 237, 197, 2);
     } else {
         display.setTextColor(online ? TFT_LIGHTGREY : TFT_ORANGE, TFT_NAVY);
         display.drawString(online ? "WAITING FOR HOST" : "CONNECT PEER",
                            display.width() / 2, 125, 2);
     }
-    display.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
-    display.drawString("Locked pieces lose their background",
-                       display.width() / 2, 207, 2);
 }
 
 void renderPuzzle(bool online, const PuzzleState& game,
@@ -1634,15 +1638,24 @@ void handleTouch() {
     }
 
     if (mode == ScreenMode::Home) {
-        if (localIsHost() && peerOnline() && !pending && y >= 82 && y < 171) {
-            if (x >= 10 && x < 155) {
-                startPuzzle({3, 3, PuzzleTheme::Planets});
-            } else if (x >= 165 && x < 310) {
-                startPuzzle({4, 3, PuzzleTheme::Greek});
-            }
-        } else if (localIsHost() && peerOnline() && x >= 45 && x < 275) {
-            if (y >= 185 && y < 240) {
-                startMastermind();
+        if (localIsHost() && peerOnline() && !pending) {
+            if (y >= 75 && y < 145) {
+                if (x >= 10 && x < 155) {
+                    startPuzzle({3, 3, PuzzleTheme::Planets});
+                } else if (x >= 165 && x < 310) {
+                    startPuzzle({4, 3, PuzzleTheme::Greek});
+                }
+            } else if (y >= 150 && y < 220) {
+                if (x >= 10 && x < 155) {
+                    startMastermind();
+                } else if (x >= 165 && x < 310) {
+                    // Start Countdown game mode
+                    portENTER_CRITICAL(&gameMux);
+                    activeGame = {nextActiveGameEpoch(activeGame.epoch, 0, 0), ActiveGameKind::Countdown};
+                    screenMode = ScreenMode::Home; // Ready
+                    displayDirty = true;
+                    portEXIT_CRITICAL(&gameMux);
+                }
             }
         }
         return;
