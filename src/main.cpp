@@ -53,6 +53,16 @@ constexpr int16_t kExitX = 271;
 constexpr int16_t kExitY = 3;
 constexpr int16_t kExitWidth = 46;
 constexpr int16_t kExitHeight = 26;
+constexpr int16_t kCountdownNewRoundX = 110;
+constexpr int16_t kCountdownNewRoundY = 175;
+constexpr int16_t kCountdownNewRoundWidth = 100;
+constexpr int16_t kCountdownNewRoundHeight = 34;
+constexpr int16_t kCountdownRoundTypeY = 90;
+constexpr int16_t kCountdownRoundTypeWidth = 90;
+constexpr int16_t kCountdownRoundTypeHeight = 60;
+constexpr int16_t kCountdownNumbersX = 5;
+constexpr int16_t kCountdownLettersX = 115;
+constexpr int16_t kCountdownConundrumX = 225;
 
 struct PuzzleLayout {
     int16_t x;
@@ -755,8 +765,67 @@ void renderCountdown(bool online, const CountdownWireState& state) {
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
-    display.drawString("COUNTDOWN MATCH", 145, 20, 4);
     renderExitButton(online);
+
+    if (state.phase == CountdownWirePhase::BetweenRounds) {
+        display.drawString("CHOOSE NEXT ROUND", 145, 20, 4);
+        display.setTextColor(TFT_YELLOW, TFT_NAVY);
+        display.drawString(boardId == state.hostBoardId
+                                ? "HOST: PICK A ROUND TYPE"
+                                : "WAITING FOR HOST TO PICK",
+                           160, 55, 2);
+
+        if (boardId == state.hostBoardId) {
+            display.fillRoundRect(kCountdownNumbersX, kCountdownRoundTypeY,
+                                  kCountdownRoundTypeWidth,
+                                  kCountdownRoundTypeHeight, 8, TFT_DARKCYAN);
+            display.drawRoundRect(kCountdownNumbersX, kCountdownRoundTypeY,
+                                  kCountdownRoundTypeWidth,
+                                  kCountdownRoundTypeHeight, 8, TFT_WHITE);
+            display.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+            display.drawString("NUMBERS",
+                               kCountdownNumbersX + kCountdownRoundTypeWidth / 2,
+                               kCountdownRoundTypeY +
+                                   kCountdownRoundTypeHeight / 2,
+                               2);
+
+            display.fillRoundRect(kCountdownLettersX, kCountdownRoundTypeY,
+                                  kCountdownRoundTypeWidth,
+                                  kCountdownRoundTypeHeight, 8, TFT_MAGENTA);
+            display.drawRoundRect(kCountdownLettersX, kCountdownRoundTypeY,
+                                  kCountdownRoundTypeWidth,
+                                  kCountdownRoundTypeHeight, 8, TFT_WHITE);
+            display.setTextColor(TFT_WHITE, TFT_MAGENTA);
+            display.drawString("LETTERS",
+                               kCountdownLettersX + kCountdownRoundTypeWidth / 2,
+                               kCountdownRoundTypeY +
+                                   kCountdownRoundTypeHeight / 2,
+                               2);
+
+            display.fillRoundRect(kCountdownConundrumX, kCountdownRoundTypeY,
+                                  kCountdownRoundTypeWidth,
+                                  kCountdownRoundTypeHeight, 8, TFT_DARKGREEN);
+            display.drawRoundRect(kCountdownConundrumX, kCountdownRoundTypeY,
+                                  kCountdownRoundTypeWidth,
+                                  kCountdownRoundTypeHeight, 8, TFT_WHITE);
+            display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+            display.drawString("CONUNDRUM",
+                               kCountdownConundrumX +
+                                   kCountdownRoundTypeWidth / 2,
+                               kCountdownRoundTypeY +
+                                   kCountdownRoundTypeHeight / 2,
+                               2);
+        }
+
+        display.setTextColor(TFT_WHITE, TFT_NAVY);
+        char roundLabel[32];
+        snprintf(roundLabel, sizeof(roundLabel), "ROUND %lu",
+                static_cast<unsigned long>(state.roundNumber));
+        display.drawString(roundLabel, 160, 230, 2);
+        return;
+    }
+
+    display.drawString("COUNTDOWN MATCH", 145, 20, 4);
 
     display.setTextColor(TFT_YELLOW, TFT_NAVY);
     display.drawString("SYNCHRONIZED NUM / LET / CON", 160, 55, 2);
@@ -779,6 +848,21 @@ void renderCountdown(bool online, const CountdownWireState& state) {
         display.drawString("HOST PLAYER (IN CONTROL)", 160, 195, 2);
     } else {
         display.drawString("GUEST PLAYER (SYNCED)", 160, 195, 2);
+    }
+
+    if (boardId == state.hostBoardId &&
+        state.phase != CountdownWirePhase::Exited) {
+        display.fillRoundRect(kCountdownNewRoundX, kCountdownNewRoundY,
+                              kCountdownNewRoundWidth,
+                              kCountdownNewRoundHeight, 7, TFT_DARKGREEN);
+        display.drawRoundRect(kCountdownNewRoundX, kCountdownNewRoundY,
+                              kCountdownNewRoundWidth,
+                              kCountdownNewRoundHeight, 7, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+        display.drawString("NEW ROUND",
+                           kCountdownNewRoundX + kCountdownNewRoundWidth / 2,
+                           kCountdownNewRoundY + kCountdownNewRoundHeight / 2,
+                           2);
     }
 }
 
@@ -1992,6 +2076,70 @@ void handleTouch() {
                                              exited, 0};
                 displayDirty = true;
                 portEXIT_CRITICAL(&gameMux);
+            }
+        }
+        return;
+    }
+    if (mode == ScreenMode::Countdown &&
+        x >= kCountdownNewRoundX &&
+        x < kCountdownNewRoundX + kCountdownNewRoundWidth &&
+        y >= kCountdownNewRoundY &&
+        y < kCountdownNewRoundY + kCountdownNewRoundHeight) {
+        CountdownWireState countdownSnapshot{};
+        portENTER_CRITICAL(&gameMux);
+        countdownSnapshot = countdownState;
+        portEXIT_CRITICAL(&gameMux);
+        if (countdownStateReady && boardId == countdownSnapshot.hostBoardId &&
+            countdownSnapshot.phase != CountdownWirePhase::BetweenRounds) {
+            CountdownWireState advanced = countdownSnapshot;
+            if (advanceCountdownRound(advanced, boardId)) {
+                portENTER_CRITICAL(&gameMux);
+                if (sameCountdownWireState(countdownState, countdownSnapshot)) {
+                    countdownState = advanced;
+                    countdownStateReady = true;
+                    countdownPendingDelivery = CountdownPendingDelivery{
+                        true, MessageType::CountdownState, advanced, 0};
+                    displayDirty = true;
+                }
+                portEXIT_CRITICAL(&gameMux);
+            }
+        }
+        return;
+    }
+    if (mode == ScreenMode::Countdown &&
+        y >= kCountdownRoundTypeY &&
+        y < kCountdownRoundTypeY + kCountdownRoundTypeHeight) {
+        uint8_t roundType = 0;
+        if (x >= kCountdownNumbersX &&
+            x < kCountdownNumbersX + kCountdownRoundTypeWidth) {
+            roundType = 1;  // Numbers
+        } else if (x >= kCountdownLettersX &&
+                   x < kCountdownLettersX + kCountdownRoundTypeWidth) {
+            roundType = 2;  // Letters
+        } else if (x >= kCountdownConundrumX &&
+                   x < kCountdownConundrumX + kCountdownRoundTypeWidth) {
+            roundType = 3;  // Conundrum
+        }
+        if (roundType != 0) {
+            CountdownWireState countdownSnapshot{};
+            portENTER_CRITICAL(&gameMux);
+            countdownSnapshot = countdownState;
+            portEXIT_CRITICAL(&gameMux);
+            if (countdownStateReady &&
+                boardId == countdownSnapshot.hostBoardId) {
+                CountdownWireState selected = countdownSnapshot;
+                if (selectCountdownRoundType(selected, boardId, roundType)) {
+                    portENTER_CRITICAL(&gameMux);
+                    if (sameCountdownWireState(countdownState,
+                                               countdownSnapshot)) {
+                        countdownState = selected;
+                        countdownStateReady = true;
+                        countdownPendingDelivery = CountdownPendingDelivery{
+                            true, MessageType::CountdownState, selected, 0};
+                        displayDirty = true;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+                }
             }
         }
         return;

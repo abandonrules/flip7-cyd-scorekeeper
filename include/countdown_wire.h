@@ -119,6 +119,32 @@ inline bool exitCountdownMatch(CountdownWireState& state,
     return true;
 }
 
+inline bool advanceCountdownRound(CountdownWireState& state,
+                                  uint32_t actorBoardId) {
+    if (state.phase == CountdownWirePhase::Exited ||
+        actorBoardId != state.hostBoardId || state.roundNumber == UINT32_MAX) {
+        return false;
+    }
+    ++state.roundNumber;
+    ++state.revision;
+    state.phase = CountdownWirePhase::BetweenRounds;
+    return true;
+}
+
+inline bool selectCountdownRoundType(CountdownWireState& state,
+                                     uint32_t actorBoardId,
+                                     uint8_t roundType) {
+    if (state.phase != CountdownWirePhase::BetweenRounds ||
+        actorBoardId != state.hostBoardId || roundType < 1 ||
+        roundType > 3) {
+        return false;
+    }
+    state.roundType = roundType;
+    state.phase = CountdownWirePhase::InRound;
+    ++state.revision;
+    return true;
+}
+
 inline bool applyCountdownExitSignal(CountdownWireState& current,
                                      const CountdownWireState& candidate,
                                      uint32_t senderBoardId) {
