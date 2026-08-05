@@ -64,7 +64,7 @@ struct CountdownWireState {
     CountdownWirePhase phase; // offset 36
     uint8_t  roundType;       // offset 37
     uint8_t  roundSubPhase;   // offset 38  (CountdownRoundSubPhase cast)
-    uint8_t  reserved;        // offset 39  must be zero
+    uint8_t  roundConfig;     // offset 39  round-specific config (e.g. largeCount for Numbers)
 };
 
 // Host-authority record — carried in transfer packets; every authoritative
@@ -89,8 +89,7 @@ inline bool isValidCountdownWireState(const CountdownWireState& state) {
          state.chooserBoardId != state.hostBoardId &&
          state.chooserBoardId != state.guestBoardId) ||
         state.phase < CountdownWirePhase::Setup ||
-        state.phase > CountdownWirePhase::Exited ||
-        state.reserved != 0) {
+        state.phase > CountdownWirePhase::Exited) {
         return false;
     }
     return true;
@@ -178,8 +177,10 @@ inline bool advanceCountdownRound(CountdownWireState& state,
 inline bool selectCountdownRoundType(CountdownWireState& state,
                                      uint32_t actorBoardId,
                                      uint8_t roundType) {
-    if (state.phase != CountdownWirePhase::BetweenRounds ||
-        actorBoardId != state.chooserBoardId ||  // chooser picks, not host
+    const bool pickablePhase = state.phase == CountdownWirePhase::BetweenRounds ||
+                               state.phase == CountdownWirePhase::Setup;
+    if (!pickablePhase ||
+        actorBoardId != state.chooserBoardId ||
         roundType < 1 || roundType > 3) {
         return false;
     }

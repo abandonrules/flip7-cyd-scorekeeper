@@ -255,7 +255,9 @@ struct ConUiState {
 };
 ConUiState conUi{};
 
-uint32_t roundPhaseStartMs = 0;  // millis() when current sub-phase began
+uint32_t roundPhaseStartMs = 0;   // millis() when current sub-phase began
+uint32_t lastAnimFrameMs   = 0;   // last millis() a timed animation redrawed
+constexpr uint32_t kAnimFrameIntervalMs = 100;  // ~10 fps for the arc timer
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
@@ -955,28 +957,30 @@ static void renderCountdownNumpad(int32_t draftValue, bool submitted) {
 // Round intro screen (Intro sub-phase) \u2014 all round types
 // ---------------------------------------------------------------------------
 static void renderCountdownIntro(const CountdownWireState& state,
-                                 uint32_t elapsedMs) {
-    display.fillScreen(TFT_BLACK);
-    display.setTextDatum(MC_DATUM);
+                                 uint32_t elapsedMs, bool firstFrame) {
+    if (firstFrame) {
+        display.fillScreen(TFT_BLACK);
+        display.setTextDatum(MC_DATUM);
 
-    const char* title = "COUNTDOWN";
-    uint16_t titleColour = TFT_WHITE;
-    if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Numbers)) {
-        title = "NUMBERS ROUND";
-        titleColour = TFT_CYAN;
-    } else if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Letters)) {
-        title = "LETTERS ROUND";
-        titleColour = TFT_YELLOW;
-    } else if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Conundrum)) {
-        title = "CONUNDRUM ROUND";
-        titleColour = TFT_MAGENTA;
+        const char* title = "COUNTDOWN";
+        uint16_t titleColour = TFT_WHITE;
+        if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Numbers)) {
+            title = "NUMBERS ROUND";
+            titleColour = TFT_CYAN;
+        } else if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Letters)) {
+            title = "LETTERS ROUND";
+            titleColour = TFT_YELLOW;
+        } else if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Conundrum)) {
+            title = "CONUNDRUM ROUND";
+            titleColour = TFT_MAGENTA;
+        }
+        display.setTextColor(titleColour, TFT_BLACK);
+        display.drawString(title, 160, 75, 4);
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Get ready...", 160, 130, 2);
     }
-
-    display.setTextColor(titleColour, TFT_BLACK);
-    display.drawString(title, 160, 75, 4);
-    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    display.drawString("Get ready...", 160, 130, 2);
-
+    // Always update the timer circle region only
+    display.fillCircle(160, 175, 33, TFT_BLACK);
     renderCountdownAnimation(160, 175, 30, elapsedMs, 5000);
 }
 
@@ -1019,20 +1023,23 @@ static void renderCountdownNumPicking(const CountdownWireState& state,
 
 static void renderCountdownNumThinking(const CountdownWireState& state,
                                        const flip7::countdown::NumbersRoundProjection& proj,
-                                       uint32_t elapsedMs) {
-    display.fillScreen(TFT_BLACK);
-    renderCountdownRoundHeader(state, false);
-    renderCountdownTileStrip(proj);
+                                       uint32_t elapsedMs, bool firstFrame) {
+    if (firstFrame) {
+        display.fillScreen(TFT_BLACK);
+        renderCountdownRoundHeader(state, false);
+        renderCountdownTileStrip(proj);
 
-    display.setTextDatum(MC_DATUM);
-    display.setTextColor(TFT_CYAN, TFT_BLACK);
-    display.drawString("TARGET", 130, 100, 2);
-    display.setTextColor(TFT_WHITE, TFT_BLACK);
-    display.drawNumber(static_cast<int32_t>(proj.target), 130, 135, 6);
+        display.setTextDatum(MC_DATUM);
+        display.setTextColor(TFT_CYAN, TFT_BLACK);
+        display.drawString("TARGET", 130, 100, 2);
+        display.setTextColor(TFT_WHITE, TFT_BLACK);
+        display.drawNumber(static_cast<int32_t>(proj.target), 130, 135, 6);
 
-    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    display.drawString("Calculate on paper", 130, 190, 2);
-
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Calculate on paper", 130, 190, 2);
+    }
+    // Only update the timer circle region to avoid full-screen flicker
+    display.fillCircle(kCdTimerCX, kCdTimerCY, kCdTimerR + 3, TFT_BLACK);
     renderCountdownAnimation(kCdTimerCX, kCdTimerCY, kCdTimerR,
                              elapsedMs, 30000);
 }
@@ -1225,7 +1232,8 @@ void renderCountdown(bool online, const CountdownWireState& state) {
 
     // Intro sub-phase \u2014 common to all round types
     if (subPhase == SubPhase::Intro) {
-        renderCountdownIntro(state, elapsed);
+        renderCountdownIntro(state, elapsed,
+                             lastAnimFrameMs < roundPhaseStartMs);
         return;
     }
 
@@ -1239,7 +1247,8 @@ void renderCountdown(bool online, const CountdownWireState& state) {
         portENTER_CRITICAL(&gameMux);
         proj = countdownEngine.numbersProjection();
         portEXIT_CRITICAL(&gameMux);
-        renderCountdownNumThinking(state, proj, elapsed);
+        renderCountdownNumThinking(state, proj, elapsed,
+                                   lastAnimFrameMs < roundPhaseStartMs);
         return;
     }
     if (subPhase == SubPhase::NumClaimEntry) {
@@ -1433,17 +1442,19 @@ static void renderCountdownLetPicking(const CountdownWireState& state,
 
 static void renderCountdownLetThinking(const CountdownWireState& state,
                                         const flip7::countdown::LettersRoundProjection& proj,
-                                        uint32_t elapsedMs) {
-    display.fillScreen(TFT_BLACK);
-    renderCountdownRoundHeader(state, false);
-    renderLetterStrip(proj.letters, proj.letterCount);
+                                        uint32_t elapsedMs, bool firstFrame) {
+    if (firstFrame) {
+        display.fillScreen(TFT_BLACK);
+        renderCountdownRoundHeader(state, false);
+        renderLetterStrip(proj.letters, proj.letterCount);
 
-    display.setTextDatum(MC_DATUM);
-    display.setTextColor(TFT_YELLOW, TFT_BLACK);
-    display.drawString("Make the longest word you can", 160, 100, 2);
-    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    display.drawString("Your time starts now", 160, 120, 2);
-
+        display.setTextDatum(MC_DATUM);
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("Make the longest word you can", 160, 100, 2);
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Your time starts now", 160, 120, 2);
+    }
+    display.fillCircle(kCdTimerCX, kCdTimerCY, kCdTimerR + 3, TFT_BLACK);
     renderCountdownAnimation(kCdTimerCX, kCdTimerCY, kCdTimerR,
                              elapsedMs, 30000);
 }
@@ -1804,7 +1815,8 @@ static void renderCountdownLetConPhases(  // NOLINT
         portENTER_CRITICAL(&gameMux);
         proj = countdownEngine.lettersProjection();
         portEXIT_CRITICAL(&gameMux);
-        renderCountdownLetThinking(state, proj, elapsed);
+        renderCountdownLetThinking(state, proj, elapsed,
+                                   lastAnimFrameMs < roundPhaseStartMs);
         return;
     }
     if (subPhase == SubPhase::LetClaimEntry) {
@@ -1883,7 +1895,8 @@ static void renderCountdownLetConPhases(  // NOLINT
 
     // Conundrum sub-phases
     if (subPhase == SubPhase::ConReady) {
-        renderCountdownIntro(state, elapsed);  // reuse intro screen
+        renderCountdownIntro(state, elapsed,
+                             lastAnimFrameMs < roundPhaseStartMs);  // reuse intro screen
         return;
     }
     if (subPhase == SubPhase::ConActive) {
@@ -2523,7 +2536,27 @@ void processCountdownStatePacket(const uint8_t* address,
                          ? ScreenMode::Home
                          : ScreenMode::Countdown;
         countdownReconciliationPending = false;
+
+        // Sync the local engine round so projections (target, tiles, letters,
+        // conundrum) are available for rendering — even on the guest board.
+        // The host already called startNextRound directly; skip if already done.
+        if (countdownState.phase == CountdownWirePhase::InRound &&
+            boardId != countdownState.hostBoardId) {
+            bool needsRoundStart =
+                countdownEngine.activeRound() == nullptr ||
+                countdownEngine.roundNumber() != countdownState.roundNumber;
+            if (needsRoundStart) {
+                auto rt = static_cast<flip7::countdown::RoundType>(
+                    countdownState.roundType);
+                auto rng = flip7::countdown::makeRoundRandom(
+                    countdownState.gameId, countdownState.roundNumber);
+                uint8_t largeCnt = countdownState.roundConfig;
+                countdownEngine.startNextRound(rt, rng, largeCnt);
+            }
+        }
+
         displayDirty = true;
+        lastAnimFrameMs = 0;  // force first-frame full redraw on new state
     }
     if (accepted || duplicate) {
         queueCountdownAck(packet.header.senderId, packet.state, type);
@@ -3202,6 +3235,9 @@ void handleTouch() {
                 if (advanceCountdownSubPhase(
                         advanced, boardId,
                         CountdownRoundSubPhase::NumThinking)) {
+                    // Store largeCount in roundConfig so the guest can
+                    // reconstruct the same puzzle via makeRoundRandom.
+                    advanced.roundConfig = numUi.largeCount;
                     roundPhaseStartMs = millis();
                     portENTER_CRITICAL(&gameMux);
                     if (sameCountdownWireState(countdownState, snap)) {
@@ -4033,12 +4069,19 @@ void loop() {
             using SP = CountdownRoundSubPhase;
             auto sp = static_cast<SP>(snap.roundSubPhase);
 
-            // Force re-render during timed animation sub-phases so the arc updates.
-            bool animating = (sp == SP::Intro       ||
-                              sp == SP::NumThinking  ||
-                              sp == SP::LetThinking  ||
-                              sp == SP::ConActive);
-            if (animating) {
+            // Rate-limited re-render during timed animation sub-phases (~10 fps).
+            // Without the limit every 10ms loop tick causes a full fillScreen
+            // redraw which flickers visibly on the TFT.
+            // ConActive uses a slower rate (500ms) since tiles still need full redraws.
+            bool animating  = (sp == SP::Intro      ||
+                               sp == SP::NumThinking ||
+                               sp == SP::LetThinking);
+            bool conAnimating = (sp == SP::ConActive);
+            if ((animating && (now - lastAnimFrameMs >= kAnimFrameIntervalMs ||
+                               lastAnimFrameMs < roundPhaseStartMs)) ||
+                (conAnimating && (now - lastAnimFrameMs >= 500 ||
+                                  lastAnimFrameMs < roundPhaseStartMs))) {
+                lastAnimFrameMs = now;
                 portENTER_CRITICAL(&gameMux);
                 displayDirty = true;
                 portEXIT_CRITICAL(&gameMux);
