@@ -64,6 +64,34 @@ constexpr int16_t kCountdownNumbersX = 5;
 constexpr int16_t kCountdownLettersX = 115;
 constexpr int16_t kCountdownConundrumX = 225;
 
+// In-round layout constants
+constexpr int16_t kCdTimerCX = 280;  // arc centre x (top-right corner)
+constexpr int16_t kCdTimerCY = 26;
+constexpr int16_t kCdTimerR  = 22;
+constexpr int16_t kCdTileY   = 48;   // tile strip top-left y
+constexpr int16_t kCdTileH   = 34;
+constexpr int16_t kCdTileW   = 46;
+constexpr int16_t kCdTileGap = 4;
+// Numpad (4 rows x 3 cols) — bottom half of screen
+constexpr int16_t kCdPadX   = 48;    // left edge of pad
+constexpr int16_t kCdPadY   = 105;
+constexpr int16_t kCdPadW   = 70;
+constexpr int16_t kCdPadH   = 32;
+constexpr int16_t kCdPadGap = 4;
+// Operation buttons row
+constexpr int16_t kCdOpY   = 185;
+constexpr int16_t kCdOpW   = 58;
+constexpr int16_t kCdOpH   = 30;
+// Large-count picker (0-4) for Numbers picking phase
+constexpr int16_t kCdLcY   = 120;
+constexpr int16_t kCdLcW   = 50;
+constexpr int16_t kCdLcH   = 44;
+// Admin FORCE-END button (host only, stalemate fallback)
+constexpr int16_t kCdForceEndX = 230;
+constexpr int16_t kCdForceEndY = 210;
+constexpr int16_t kCdForceEndW = 80;
+constexpr int16_t kCdForceEndH = 24;
+
 struct PuzzleLayout {
     int16_t x;
     int16_t y;
@@ -196,6 +224,38 @@ bool countdownStateReady = false;
 bool countdownRequestStateSoon = false;
 bool countdownReconciliationPending = false;
 bool sendCountdownFullStateSoon = false;
+
+// Per-round UI state — local only, not transmitted.
+struct NumUiState {
+    int32_t  draftValue{0};     // numpad entry during ClaimEntry
+    bool     claimSent{false};  // claim packet delivered to host
+    uint8_t  largeCount{2};     // large-number count chosen in NumPicking
+};
+NumUiState numUi{};
+
+struct LetUiState {
+    uint8_t  claimLength{0};        // digit claim (1-9)
+    bool     claimSent{false};
+    char     word[10]{};            // word being built from tiles
+    uint8_t  wordLen{0};
+    bool     presentationSent{false};
+    bool     verificationSent{false};
+    bool     verificationAnswer{false};  // YES=true / NO=false
+    bool     showConsonants{false};      // toggle in LetPicking view
+    bool     presenterIsHost{true};      // which board presents first
+};
+LetUiState letUi{};
+
+struct ConUiState {
+    uint8_t  circleOrder[9]{0,1,2,3,4,5,6,7,8};  // display permutation
+    uint8_t  selected[9]{};   // circleOrder indices tapped, in order
+    uint8_t  selectedCount{0};
+    bool     showGoodTry{false};
+    uint32_t goodTryMs{0};
+};
+ConUiState conUi{};
+
+uint32_t roundPhaseStartMs = 0;  // millis() when current sub-phase began
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
@@ -761,109 +821,1133 @@ void renderMastermind(bool online, const MastermindState& state,
     display.drawString("GUESS", 257, 204, 4);
 }
 
-void renderCountdown(bool online, const CountdownWireState& state) {
+// ---------------------------------------------------------------------------
+// Countdown render helpers
+// ---------------------------------------------------------------------------
+
+// Shared header row: "ROUND N | HOST XX : GUEST XX | EXIT"
+static void renderCountdownRoundHeader(const CountdownWireState& state,
+                                       bool online) {
+    display.fillRect(0, 0, 320, 36, TFT_NAVY);
+    display.setTextDatum(ML_DATUM);
+    display.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
+    char rlabel[20];
+    snprintf(rlabel, sizeof(rlabel), "RD %lu",
+             static_cast<unsigned long>(state.roundNumber));
+    display.drawString(rlabel, 6, 18, 2);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_WHITE, TFT_NAVY);
+    char scores[28];
+    snprintf(scores, sizeof(scores), "HOST %d : %d GUEST",
+             state.hostScore, state.guestScore);
+    display.drawString(scores, 155, 18, 2);
+
+    display.fillRoundRect(kExitX, kExitY, kExitWidth, kExitHeight, 5,
+                          online ? TFT_RED : TFT_ORANGE);
+    display.drawRoundRect(kExitX, kExitY, kExitWidth, kExitHeight, 5,
+                          TFT_WHITE);
+    display.setTextColor(TFT_WHITE, online ? TFT_RED : TFT_ORANGE);
+    display.drawString("EXIT", kExitX + kExitWidth / 2,
+                       kExitY + kExitHeight / 2, 2);
+}
+
+// Silent visual timer \u2014 procedural arc fallback (production will use MJPEG).
+// Draws a ring from full to empty as elapsedMs grows toward durationMs.
+static void renderCountdownAnimation(int16_t cx, int16_t cy, int16_t r,
+                                     uint32_t elapsedMs, uint32_t durationMs) {
+    // Background ring
+    display.drawCircle(cx, cy, r, TFT_DARKGREY);
+    display.drawCircle(cx, cy, r - 1, TFT_DARKGREY);
+
+    float fraction = 1.0f - static_cast<float>(elapsedMs) /
+                                 static_cast<float>(durationMs);
+    if (fraction < 0.0f) fraction = 0.0f;
+    if (fraction > 1.0f) fraction = 1.0f;
+
+    // Draw coloured arc (yellow > green; red when <20%)
+    uint16_t colour = (fraction > 0.2f) ? TFT_YELLOW : TFT_RED;
+    int segments = static_cast<int>(fraction * 60.0f);  // 60 = full circle
+    for (int i = 0; i < segments; ++i) {
+        float angle = static_cast<float>(i) * 6.0f - 90.0f;  // degrees
+        float rad   = angle * 3.14159f / 180.0f;
+        int16_t px  = cx + static_cast<int16_t>(r * cosf(rad));
+        int16_t py  = cy + static_cast<int16_t>(r * sinf(rad));
+        display.drawPixel(px, py, colour);
+        px = cx + static_cast<int16_t>((r - 1) * cosf(rad));
+        py = cy + static_cast<int16_t>((r - 1) * sinf(rad));
+        display.drawPixel(px, py, colour);
+    }
+
+    // Remaining seconds label inside the ring
+    uint32_t secsLeft = (durationMs > elapsedMs)
+                            ? (durationMs - elapsedMs + 999) / 1000
+                            : 0;
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(colour, TFT_NAVY);
+    display.drawNumber(static_cast<int32_t>(secsLeft), cx, cy, 2);
+}
+
+// Draw the 6 Numbers tiles in a horizontal strip.
+static void renderCountdownTileStrip(const flip7::countdown::NumbersRoundProjection& proj,
+                                     uint16_t usedMask = 0) {
+    for (uint8_t i = 0; i < proj.tileCount; ++i) {
+        int16_t tx = static_cast<int16_t>(kCdTileGap +
+                      i * (kCdTileW + kCdTileGap));
+        bool used = (usedMask >> i) & 1u;
+        uint16_t bg = used ? TFT_DARKGREY : TFT_DARKCYAN;
+        display.fillRoundRect(tx, kCdTileY, kCdTileW, kCdTileH, 5, bg);
+        display.drawRoundRect(tx, kCdTileY, kCdTileW, kCdTileH, 5, TFT_WHITE);
+        display.setTextDatum(MC_DATUM);
+        display.setTextColor(TFT_WHITE, bg);
+        display.drawNumber(proj.tiles[i], tx + kCdTileW / 2,
+                           kCdTileY + kCdTileH / 2, 2);
+    }
+}
+
+// Draw 3x4 numpad for claim entry. Returns nothing; touch handler checks bounds.
+static void renderCountdownNumpad(int32_t draftValue, bool submitted) {
+    // Digit grid: [7][8][9] / [4][5][6] / [1][2][3] / [0][CLR][SUBMIT]
+    const int digits[4][3] = {{7,8,9},{4,5,6},{1,2,3},{0,-1,-2}};
+    for (int row = 0; row < 4; ++row) {
+        for (int col = 0; col < 3; ++col) {
+            int16_t bx = static_cast<int16_t>(
+                kCdPadX + col * (kCdPadW + kCdPadGap));
+            int16_t by = static_cast<int16_t>(
+                kCdPadY + row * (kCdPadH + kCdPadGap));
+            int d = digits[row][col];
+            uint16_t bg = TFT_DARKGREY;
+            const char* label = "";
+            char dbuf[4];
+            if (d >= 0) {
+                bg = TFT_DARKCYAN;
+                snprintf(dbuf, sizeof(dbuf), "%d", d);
+                label = dbuf;
+            } else if (d == -1) {
+                bg = TFT_MAROON;
+                label = "CLR";
+            } else {  // SUBMIT
+                bg = submitted ? TFT_DARKGREY : TFT_DARKGREEN;
+                label = "OK";
+            }
+            display.fillRoundRect(bx, by, kCdPadW, kCdPadH, 5, bg);
+            display.drawRoundRect(bx, by, kCdPadW, kCdPadH, 5, TFT_WHITE);
+            display.setTextDatum(MC_DATUM);
+            display.setTextColor(TFT_WHITE, bg);
+            display.drawString(label, bx + kCdPadW / 2, by + kCdPadH / 2, 2);
+        }
+    }
+    // Draft value display above numpad
+    display.fillRect(kCdPadX, kCdPadY - 36, 3 * kCdPadW + 2 * kCdPadGap, 32,
+                     TFT_BLACK);
+    display.drawRect(kCdPadX, kCdPadY - 36, 3 * kCdPadW + 2 * kCdPadGap, 32,
+                     TFT_WHITE);
+    display.setTextDatum(MR_DATUM);
+    display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    char dvbuf[8];
+    snprintf(dvbuf, sizeof(dvbuf), "%ld", static_cast<long>(draftValue));
+    display.drawString(dvbuf,
+                       kCdPadX + 3 * kCdPadW + 2 * kCdPadGap - 4,
+                       kCdPadY - 20, 4);
+}
+
+// ---------------------------------------------------------------------------
+// Round intro screen (Intro sub-phase) \u2014 all round types
+// ---------------------------------------------------------------------------
+static void renderCountdownIntro(const CountdownWireState& state,
+                                 uint32_t elapsedMs) {
+    display.fillScreen(TFT_BLACK);
+    display.setTextDatum(MC_DATUM);
+
+    const char* title = "COUNTDOWN";
+    uint16_t titleColour = TFT_WHITE;
+    if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Numbers)) {
+        title = "NUMBERS ROUND";
+        titleColour = TFT_CYAN;
+    } else if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Letters)) {
+        title = "LETTERS ROUND";
+        titleColour = TFT_YELLOW;
+    } else if (state.roundType == static_cast<uint8_t>(flip7::countdown::RoundType::Conundrum)) {
+        title = "CONUNDRUM ROUND";
+        titleColour = TFT_MAGENTA;
+    }
+
+    display.setTextColor(titleColour, TFT_BLACK);
+    display.drawString(title, 160, 75, 4);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("Get ready...", 160, 130, 2);
+
+    renderCountdownAnimation(160, 175, 30, elapsedMs, 5000);
+}
+
+// ---------------------------------------------------------------------------
+// Numbers sub-phase renders
+// ---------------------------------------------------------------------------
+
+static void renderCountdownNumPicking(const CountdownWireState& state,
+                                      uint8_t selectedLarge) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString("HOW MANY LARGE NUMBERS?", 160, 55, 2);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("Large: 25 50 75 100   Small: 1-10", 160, 75, 2);
+
+    // 5 buttons: 0 1 2 3 4
+    for (uint8_t i = 0; i <= 4; ++i) {
+        int16_t bx = static_cast<int16_t>(16 + i * 58);
+        uint16_t bg = (i == selectedLarge) ? TFT_CYAN : TFT_DARKGREY;
+        uint16_t fg = (i == selectedLarge) ? TFT_BLACK : TFT_WHITE;
+        display.fillRoundRect(bx, kCdLcY, kCdLcW, kCdLcH, 8, bg);
+        display.drawRoundRect(bx, kCdLcY, kCdLcW, kCdLcH, 8, TFT_WHITE);
+        display.setTextColor(fg, bg);
+        display.drawNumber(i, bx + kCdLcW / 2, kCdLcY + kCdLcH / 2, 4);
+    }
+
+    if (boardId == state.chooserBoardId) {
+        display.fillRoundRect(95, 185, 130, 36, 8, TFT_DARKGREEN);
+        display.drawRoundRect(95, 185, 130, 36, 8, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+        display.drawString("CONFIRM", 160, 203, 4);
+    } else {
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("Waiting for chooser...", 160, 200, 2);
+    }
+}
+
+static void renderCountdownNumThinking(const CountdownWireState& state,
+                                       const flip7::countdown::NumbersRoundProjection& proj,
+                                       uint32_t elapsedMs) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+    renderCountdownTileStrip(proj);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString("TARGET", 130, 100, 2);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.drawNumber(static_cast<int32_t>(proj.target), 130, 135, 6);
+
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("Calculate on paper", 130, 190, 2);
+
+    renderCountdownAnimation(kCdTimerCX, kCdTimerCY, kCdTimerR,
+                             elapsedMs, 30000);
+}
+
+static void renderCountdownNumClaimEntry(const CountdownWireState& state,
+                                         const flip7::countdown::NumbersRoundProjection& proj,
+                                         int32_t draftValue, bool claimSent) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+    renderCountdownTileStrip(proj);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString("TARGET", 75, 100, 2);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.drawNumber(static_cast<int32_t>(proj.target), 75, 130, 4);
+
+    if (claimSent) {
+        display.setTextColor(TFT_GREEN, TFT_BLACK);
+        display.drawString("Claim sent!", 75, 165, 2);
+        display.drawString("Waiting for opponent...", 75, 185, 2);
+    } else {
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("Your answer:", 75, 100 + 3, 2);
+        renderCountdownNumpad(draftValue, claimSent);
+    }
+}
+
+static void renderCountdownNumClaimReveal(const CountdownWireState& state,
+                                           const flip7::countdown::NumbersRoundProjection& proj,
+                                           int32_t hostClaim, int32_t guestClaim) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString("CLAIMS REVEALED", 160, 52, 4);
+
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.drawString("TARGET", 160, 90, 2);
+    display.drawNumber(static_cast<int32_t>(proj.target), 160, 115, 4);
+
+    display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    char hbuf[20], gbuf[20];
+    snprintf(hbuf, sizeof(hbuf), "HOST:  %ld", static_cast<long>(hostClaim));
+    snprintf(gbuf, sizeof(gbuf), "GUEST: %ld", static_cast<long>(guestClaim));
+    display.drawString(hbuf, 160, 155, 4);
+    display.drawString(gbuf, 160, 190, 4);
+}
+
+static void renderCountdownNumPresenting(const CountdownWireState& state,
+                                          const flip7::countdown::NumbersRoundProjection& proj,
+                                          bool isPresenter) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+    renderCountdownTileStrip(proj);
+
+    display.setTextDatum(MC_DATUM);
+
+    if (!isPresenter) {
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("Opponent is presenting...", 160, 130, 2);
+        return;
+    }
+
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString("TARGET", 160, 96, 2);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.drawNumber(static_cast<int32_t>(proj.target), 160, 120, 4);
+
+    // Operation buttons
+    const char* ops[4] = {"+", "-", "x", "/"};
+    for (int i = 0; i < 4; ++i) {
+        int16_t bx = static_cast<int16_t>(6 + i * (kCdOpW + 6));
+        display.fillRoundRect(bx, kCdOpY, kCdOpW, kCdOpH, 6, TFT_DARKGREY);
+        display.drawRoundRect(bx, kCdOpY, kCdOpW, kCdOpH, 6, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_DARKGREY);
+        display.drawString(ops[i], bx + kCdOpW / 2, kCdOpY + kCdOpH / 2, 4);
+    }
+
+    // UNDO, END buttons
+    display.fillRoundRect(256, kCdOpY, 58, kCdOpH, 6, TFT_MAROON);
+    display.setTextColor(TFT_WHITE, TFT_MAROON);
+    display.drawString("UNDO", 285, kCdOpY + kCdOpH / 2, 2);
+
+    display.fillRoundRect(256, kCdOpY + kCdOpH + 6, 58, kCdOpH, 6,
+                          TFT_DARKGREEN);
+    display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+    display.drawString("END", 285, kCdOpY + kCdOpH + 6 + kCdOpH / 2, 2);
+}
+
+// ---------------------------------------------------------------------------
+// BetweenRounds scoreboard
+// ---------------------------------------------------------------------------
+static void renderCountdownBetweenRounds(bool online,
+                                          const CountdownWireState& state) {
     display.fillScreen(TFT_NAVY);
     display.setTextDatum(MC_DATUM);
     display.setTextColor(TFT_WHITE, TFT_NAVY);
     renderExitButton(online);
 
-    if (state.phase == CountdownWirePhase::BetweenRounds) {
-        display.drawString("CHOOSE NEXT ROUND", 145, 20, 4);
-        display.setTextColor(TFT_YELLOW, TFT_NAVY);
-        display.drawString(boardId == state.hostBoardId
-                                ? "HOST: PICK A ROUND TYPE"
-                                : "WAITING FOR HOST TO PICK",
-                           160, 55, 2);
+    display.drawString("CHOOSE NEXT ROUND", 145, 20, 4);
 
-        if (boardId == state.hostBoardId) {
-            display.fillRoundRect(kCountdownNumbersX, kCountdownRoundTypeY,
-                                  kCountdownRoundTypeWidth,
-                                  kCountdownRoundTypeHeight, 8, TFT_DARKCYAN);
-            display.drawRoundRect(kCountdownNumbersX, kCountdownRoundTypeY,
-                                  kCountdownRoundTypeWidth,
-                                  kCountdownRoundTypeHeight, 8, TFT_WHITE);
-            display.setTextColor(TFT_WHITE, TFT_DARKCYAN);
-            display.drawString("NUMBERS",
-                               kCountdownNumbersX + kCountdownRoundTypeWidth / 2,
-                               kCountdownRoundTypeY +
-                                   kCountdownRoundTypeHeight / 2,
-                               2);
+    // Show both roles when they differ
+    bool isChooser = (boardId == state.chooserBoardId);
+    bool isHost    = (boardId == state.hostBoardId);
+    display.setTextColor(TFT_YELLOW, TFT_NAVY);
+    if (isChooser) {
+        display.drawString("YOUR TURN TO CHOOSE", 160, 55, 2);
+    } else if (isHost) {
+        display.drawString("WAITING FOR PEER TO CHOOSE", 160, 55, 2);
+    } else {
+        display.drawString("WAITING FOR CHOOSER", 160, 55, 2);
+    }
 
-            display.fillRoundRect(kCountdownLettersX, kCountdownRoundTypeY,
-                                  kCountdownRoundTypeWidth,
-                                  kCountdownRoundTypeHeight, 8, TFT_MAGENTA);
-            display.drawRoundRect(kCountdownLettersX, kCountdownRoundTypeY,
-                                  kCountdownRoundTypeWidth,
-                                  kCountdownRoundTypeHeight, 8, TFT_WHITE);
-            display.setTextColor(TFT_WHITE, TFT_MAGENTA);
-            display.drawString("LETTERS",
-                               kCountdownLettersX + kCountdownRoundTypeWidth / 2,
-                               kCountdownRoundTypeY +
-                                   kCountdownRoundTypeHeight / 2,
-                               2);
+    if (isChooser) {
+        // NUMBERS button
+        display.fillRoundRect(kCountdownNumbersX, kCountdownRoundTypeY,
+                              kCountdownRoundTypeWidth, kCountdownRoundTypeHeight,
+                              8, TFT_DARKCYAN);
+        display.drawRoundRect(kCountdownNumbersX, kCountdownRoundTypeY,
+                              kCountdownRoundTypeWidth, kCountdownRoundTypeHeight,
+                              8, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_DARKCYAN);
+        display.drawString("NUMBERS",
+                           kCountdownNumbersX + kCountdownRoundTypeWidth / 2,
+                           kCountdownRoundTypeY + kCountdownRoundTypeHeight / 2,
+                           2);
+        // LETTERS button
+        display.fillRoundRect(kCountdownLettersX, kCountdownRoundTypeY,
+                              kCountdownRoundTypeWidth, kCountdownRoundTypeHeight,
+                              8, TFT_YELLOW);
+        display.drawRoundRect(kCountdownLettersX, kCountdownRoundTypeY,
+                              kCountdownRoundTypeWidth, kCountdownRoundTypeHeight,
+                              8, TFT_WHITE);
+        display.setTextColor(TFT_BLACK, TFT_YELLOW);
+        display.drawString("LETTERS",
+                           kCountdownLettersX + kCountdownRoundTypeWidth / 2,
+                           kCountdownRoundTypeY + kCountdownRoundTypeHeight / 2,
+                           2);
+        // CONUNDRUM button
+        display.fillRoundRect(kCountdownConundrumX, kCountdownRoundTypeY,
+                              kCountdownRoundTypeWidth, kCountdownRoundTypeHeight,
+                              8, TFT_MAGENTA);
+        display.drawRoundRect(kCountdownConundrumX, kCountdownRoundTypeY,
+                              kCountdownRoundTypeWidth, kCountdownRoundTypeHeight,
+                              8, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_MAGENTA);
+        display.drawString("CONUNDRUM",
+                           kCountdownConundrumX + kCountdownRoundTypeWidth / 2,
+                           kCountdownRoundTypeY + kCountdownRoundTypeHeight / 2,
+                           2);
+    }
 
-            display.fillRoundRect(kCountdownConundrumX, kCountdownRoundTypeY,
-                                  kCountdownRoundTypeWidth,
-                                  kCountdownRoundTypeHeight, 8, TFT_DARKGREEN);
-            display.drawRoundRect(kCountdownConundrumX, kCountdownRoundTypeY,
-                                  kCountdownRoundTypeWidth,
-                                  kCountdownRoundTypeHeight, 8, TFT_WHITE);
-            display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-            display.drawString("CONUNDRUM",
-                               kCountdownConundrumX +
-                                   kCountdownRoundTypeWidth / 2,
-                               kCountdownRoundTypeY +
-                                   kCountdownRoundTypeHeight / 2,
-                               2);
-        }
+    // Scores + round number
+    display.setTextColor(TFT_WHITE, TFT_NAVY);
+    char hostLabel[20], guestLabel[20];
+    snprintf(hostLabel,  sizeof(hostLabel),  "HOST  %d", state.hostScore);
+    snprintf(guestLabel, sizeof(guestLabel), "GUEST %d", state.guestScore);
+    display.drawString(hostLabel,  80,  185, 4);
+    display.drawString(guestLabel, 240, 185, 4);
 
-        display.setTextColor(TFT_WHITE, TFT_NAVY);
-        char roundLabel[32];
-        snprintf(roundLabel, sizeof(roundLabel), "ROUND %lu",
-                static_cast<unsigned long>(state.roundNumber));
-        display.drawString(roundLabel, 160, 230, 2);
+    char roundLabel[24];
+    snprintf(roundLabel, sizeof(roundLabel), "Round %lu",
+             static_cast<unsigned long>(state.roundNumber));
+    display.drawString(roundLabel, 160, 220, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Main renderCountdown dispatcher
+// ---------------------------------------------------------------------------
+// Forward declaration — renderCountdownLetConPhases is defined after the helpers.
+static void renderCountdownLetConPhases(
+    bool online, const CountdownWireState& state,
+    CountdownRoundSubPhase subPhase, uint32_t elapsed);
+
+void renderCountdown(bool online, const CountdownWireState& state) {
+    using SubPhase = CountdownRoundSubPhase;
+    auto subPhase  = static_cast<SubPhase>(state.roundSubPhase);
+    uint32_t now   = millis();
+    uint32_t elapsed = (now >= roundPhaseStartMs)
+                           ? now - roundPhaseStartMs
+                           : 0;
+
+    if (state.phase == CountdownWirePhase::BetweenRounds ||
+        state.phase == CountdownWirePhase::Setup) {
+        renderCountdownBetweenRounds(online, state);
         return;
     }
 
-    display.drawString("COUNTDOWN MATCH", 145, 20, 4);
+    // Intro sub-phase \u2014 common to all round types
+    if (subPhase == SubPhase::Intro) {
+        renderCountdownIntro(state, elapsed);
+        return;
+    }
 
-    display.setTextColor(TFT_YELLOW, TFT_NAVY);
-    display.drawString("SYNCHRONIZED NUM / LET / CON", 160, 55, 2);
+    // Numbers sub-phases
+    if (subPhase == SubPhase::NumPicking) {
+        renderCountdownNumPicking(state, numUi.largeCount);
+        return;
+    }
+    if (subPhase == SubPhase::NumThinking) {
+        flip7::countdown::NumbersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.numbersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownNumThinking(state, proj, elapsed);
+        return;
+    }
+    if (subPhase == SubPhase::NumClaimEntry) {
+        flip7::countdown::NumbersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.numbersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownNumClaimEntry(state, proj, numUi.draftValue,
+                                     numUi.claimSent);
+        return;
+    }
+    if (subPhase == SubPhase::NumClaimReveal) {
+        flip7::countdown::NumbersRoundProjection proj{};
+        int32_t hClaim = 0, gClaim = 0;
+        portENTER_CRITICAL(&gameMux);
+        proj   = countdownEngine.numbersProjection();
+        auto* nr = countdownEngine.numbersRound();
+        if (nr) {
+            hClaim = nr->claimFor(state.hostBoardId);
+            gClaim = nr->claimFor(state.guestBoardId);
+        }
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownNumClaimReveal(state, proj, hClaim, gClaim);
+        return;
+    }
+    if (subPhase == SubPhase::NumPresentPlayerA ||
+        subPhase == SubPhase::NumPresentPlayerB) {
+        flip7::countdown::NumbersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.numbersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        // Determine if this board is the active presenter
+        // (simple heuristic: PlayerA = host, PlayerB = guest for now)
+        bool isPresenterA = (boardId == state.hostBoardId);
+        bool isActive = (subPhase == SubPhase::NumPresentPlayerA && isPresenterA) ||
+                        (subPhase == SubPhase::NumPresentPlayerB && !isPresenterA);
+        renderCountdownNumPresenting(state, proj, isActive);
+        return;
+    }
+    if (subPhase == SubPhase::NumResult) {
+        display.fillScreen(TFT_BLACK);
+        renderCountdownRoundHeader(state, online);
+        display.setTextDatum(MC_DATUM);
+        display.setTextColor(TFT_GREEN, TFT_BLACK);
+        display.drawString("ROUND COMPLETE", 160, 120, 4);
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Next round starting...", 160, 175, 2);
+        return;
+    }
 
-    // Host & Guest Scores
-    display.fillRoundRect(20, 85, 130, 80, 8, TFT_DARKCYAN);
-    display.drawRoundRect(20, 85, 130, 80, 8, TFT_WHITE);
-    display.setTextColor(TFT_WHITE, TFT_DARKCYAN);
-    display.drawString("HOST", 85, 105, 2);
-    display.drawNumber(state.hostScore, 85, 135, 4);
+    // Letters and Conundrum phases — defined after helpers below.
+    renderCountdownLetConPhases(online, state, subPhase, elapsed);
+}
 
-    display.fillRoundRect(170, 85, 130, 80, 8, TFT_MAGENTA);
-    display.drawRoundRect(170, 85, 130, 80, 8, TFT_WHITE);
-    display.setTextColor(TFT_WHITE, TFT_MAGENTA);
-    display.drawString("GUEST", 235, 105, 2);
-    display.drawNumber(state.guestScore, 235, 135, 4);
+// ---------------------------------------------------------------------------
+// Letters render helpers
+// ---------------------------------------------------------------------------
 
-    display.setTextColor(TFT_GREEN, TFT_NAVY);
-    if (boardId == state.hostBoardId) {
-        display.drawString("HOST PLAYER (IN CONTROL)", 160, 195, 2);
+// 9-letter strip reused across LetThinking, LetPresenting, LetResult.
+// tappable=true draws each tile as a pressable button.
+// usedMask: bit N set = tile N dimmed (already placed in word).
+static void renderLetterStrip(const char* letters, uint8_t count,
+                               bool tappable = false,
+                               uint16_t usedMask = 0) {
+    constexpr int16_t W = 30, H = 34, GAP = 4;
+    int16_t startX = static_cast<int16_t>((320 - count * (W + GAP) + GAP) / 2);
+    for (uint8_t i = 0; i < count; ++i) {
+        int16_t tx = static_cast<int16_t>(startX + i * (W + GAP));
+        bool used   = tappable && ((usedMask >> i) & 1u);
+        uint16_t bg = used ? TFT_DARKGREY
+                           : (tappable ? TFT_DARKCYAN : 0x1082 /*dark navy*/);
+        display.fillRoundRect(tx, kCdTileY, W, H, 5, bg);
+        display.drawRoundRect(tx, kCdTileY, W, H, 5, TFT_WHITE);
+        display.setTextDatum(MC_DATUM);
+        display.setTextColor(TFT_WHITE, bg);
+        char s[2] = {letters[i], '\0'};
+        display.drawString(s, tx + W / 2, kCdTileY + H / 2, 2);
+    }
+}
+
+// Vowel button row (A E I O U) for LetPicking.
+static void renderVowelButtons(uint8_t vowelCount) {
+    constexpr int16_t W = 50, H = 44, Y = 95;
+    const char vowels[5] = {'A', 'E', 'I', 'O', 'U'};
+    for (int i = 0; i < 5; ++i) {
+        int16_t bx = static_cast<int16_t>(10 + i * 60);
+        uint16_t bg = (vowelCount >= 5) ? TFT_DARKGREY : TFT_DARKCYAN;
+        display.fillRoundRect(bx, Y, W, H, 8, bg);
+        display.drawRoundRect(bx, Y, W, H, 8, TFT_WHITE);
+        display.setTextDatum(MC_DATUM);
+        display.setTextColor(TFT_WHITE, bg);
+        char s[2] = {vowels[i], '\0'};
+        display.drawString(s, bx + W / 2, Y + H / 2, 4);
+    }
+}
+
+// Consonant keyboard (4 rows) for LetPicking.
+static void renderConsonantKeyboard(uint8_t consonantCount) {
+    // BCDFGH / JKLMNP / QRSTVW / XYZ
+    const char rows[4][7] = {
+        {'B','C','D','F','G','H', 0},
+        {'J','K','L','M','N','P', 0},
+        {'Q','R','S','T','V','W', 0},
+        {'X','Y','Z', 0, 0, 0,  0},
+    };
+    const int rowLen[4] = {6, 6, 6, 3};
+    constexpr int16_t W = 42, H = 32, GAP = 4;
+    bool maxed = (consonantCount >= 6);
+    for (int row = 0; row < 4; ++row) {
+        int16_t startX = static_cast<int16_t>(
+            (320 - rowLen[row] * (W + GAP) + GAP) / 2);
+        int16_t by = static_cast<int16_t>(88 + row * (H + GAP));
+        for (int col = 0; col < rowLen[row]; ++col) {
+            int16_t bx = static_cast<int16_t>(startX + col * (W + GAP));
+            uint16_t bg = maxed ? TFT_DARKGREY : TFT_DARKGREY;
+            // Consonants always dark-grey unless enabled — keep simple
+            bg = maxed ? 0x2104 /*very dark*/ : TFT_DARKGREY;
+            display.fillRoundRect(bx, by, W, H, 5, bg);
+            display.drawRoundRect(bx, by, W, H, 5, TFT_WHITE);
+            display.setTextDatum(MC_DATUM);
+            display.setTextColor(TFT_WHITE, bg);
+            char s[2] = {rows[row][col], '\0'};
+            display.drawString(s, bx + W / 2, by + H / 2, 2);
+        }
+    }
+}
+
+static void renderCountdownLetPicking(const CountdownWireState& state,
+                                       const flip7::countdown::LettersRoundProjection& proj,
+                                       bool showConsonants) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+
+    bool isChooser = (boardId == state.chooserBoardId);
+
+    // Drawn-letters progress strip
+    if (proj.letterCount > 0)
+        renderLetterStrip(proj.letters, proj.letterCount);
+
+    display.setTextDatum(MC_DATUM);
+    if (!isChooser) {
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("Waiting for chooser...", 160, 130, 2);
+        return;
+    }
+
+    // Toggle tabs: [VOWELS] [CONSONANTS]
+    uint16_t vbg = showConsonants ? TFT_DARKGREY : TFT_DARKCYAN;
+    uint16_t cbg = showConsonants ? TFT_DARKGREY : TFT_DARKGREY;
+    // Actually light up the active tab
+    vbg = !showConsonants ? TFT_DARKCYAN : TFT_DARKGREY;
+    cbg =  showConsonants ? TFT_DARKGREY : TFT_DARKGREY;
+    display.fillRoundRect(5, 50, 100, 28, 6, vbg);
+    display.setTextColor(TFT_WHITE, vbg);
+    display.drawString("VOWELS", 55, 64, 2);
+    display.fillRoundRect(215, 50, 100, 28, 6, cbg);
+    display.setTextColor(TFT_WHITE, cbg);
+    display.drawString("CONSONANTS", 265, 64, 2);
+
+    // Progress label
+    char prog[36];
+    snprintf(prog, sizeof(prog), "V:%u/4  C:%u/5  Total:%u/9",
+             static_cast<unsigned>(proj.letterCount),  // rough
+             0u, static_cast<unsigned>(proj.letterCount));
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString(prog, 160, 83, 2);
+
+    if (!showConsonants) {
+        // Count vowels in drawn set
+        uint8_t vc = 0;
+        for (uint8_t i = 0; i < proj.letterCount; ++i) {
+            char c = proj.letters[i];
+            if (c=='A'||c=='E'||c=='I'||c=='O'||c=='U') ++vc;
+        }
+        renderVowelButtons(vc);
     } else {
-        display.drawString("GUEST PLAYER (SYNCED)", 160, 195, 2);
+        uint8_t cc = 0;
+        for (uint8_t i = 0; i < proj.letterCount; ++i) {
+            char c = proj.letters[i];
+            if (c!='A'&&c!='E'&&c!='I'&&c!='O'&&c!='U') ++cc;
+        }
+        renderConsonantKeyboard(cc);
     }
 
-    if (boardId == state.hostBoardId &&
-        state.phase != CountdownWirePhase::Exited) {
-        display.fillRoundRect(kCountdownNewRoundX, kCountdownNewRoundY,
-                              kCountdownNewRoundWidth,
-                              kCountdownNewRoundHeight, 7, TFT_DARKGREEN);
-        display.drawRoundRect(kCountdownNewRoundX, kCountdownNewRoundY,
-                              kCountdownNewRoundWidth,
-                              kCountdownNewRoundHeight, 7, TFT_WHITE);
+    if (proj.letterCount >= 9) {
+        display.fillRoundRect(95, 200, 130, 34, 8, TFT_DARKGREEN);
         display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
-        display.drawString("NEW ROUND",
-                           kCountdownNewRoundX + kCountdownNewRoundWidth / 2,
-                           kCountdownNewRoundY + kCountdownNewRoundHeight / 2,
-                           2);
+        display.drawString("LOCK IN", 160, 217, 4);
     }
+}
+
+static void renderCountdownLetThinking(const CountdownWireState& state,
+                                        const flip7::countdown::LettersRoundProjection& proj,
+                                        uint32_t elapsedMs) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+    renderLetterStrip(proj.letters, proj.letterCount);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    display.drawString("Make the longest word you can", 160, 100, 2);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("Your time starts now", 160, 120, 2);
+
+    renderCountdownAnimation(kCdTimerCX, kCdTimerCY, kCdTimerR,
+                             elapsedMs, 30000);
+}
+
+static void renderCountdownLetClaimEntry(const CountdownWireState& state,
+                                          const flip7::countdown::LettersRoundProjection& proj,
+                                          uint8_t selectedLen, bool sent) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+    renderLetterStrip(proj.letters, proj.letterCount);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    display.drawString("Longest word you found:", 160, 95, 2);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("Keep your claim private", 160, 113, 2);
+
+    if (sent) {
+        display.setTextColor(TFT_GREEN, TFT_BLACK);
+        display.drawString("Claim sent!", 160, 155, 4);
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Waiting for opponent...", 160, 190, 2);
+        return;
+    }
+
+    // 9 digit buttons (1-9) in a row
+    constexpr int16_t DW = 28, DH = 34, DY = 130, DGAP = 3;
+    int16_t startX = static_cast<int16_t>((320 - 9*(DW+DGAP)+DGAP) / 2);
+    for (int d = 1; d <= 9; ++d) {
+        int16_t bx = static_cast<int16_t>(startX + (d-1)*(DW+DGAP));
+        uint16_t bg = (selectedLen == d) ? TFT_CYAN : TFT_DARKGREY;
+        uint16_t fg = (selectedLen == d) ? TFT_BLACK : TFT_WHITE;
+        display.fillRoundRect(bx, DY, DW, DH, 5, bg);
+        display.drawRoundRect(bx, DY, DW, DH, 5, TFT_WHITE);
+        display.setTextDatum(MC_DATUM);
+        display.setTextColor(fg, bg);
+        display.drawNumber(d, bx + DW/2, DY + DH/2, 2);
+    }
+
+    uint16_t sbg = (selectedLen > 0) ? TFT_DARKGREEN : TFT_DARKGREY;
+    display.fillRoundRect(95, 180, 130, 34, 8, sbg);
+    display.drawRoundRect(95, 180, 130, 34, 8, TFT_WHITE);
+    display.setTextColor(TFT_WHITE, sbg);
+    display.drawString("SUBMIT CLAIM", 160, 197, 2);
+}
+
+static void renderCountdownLetClaimReveal(const CountdownWireState& state,
+                                           const flip7::countdown::LettersRoundProjection& proj,
+                                           uint8_t hostClaim, uint8_t guestClaim) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+    renderLetterStrip(proj.letters, proj.letterCount);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString("CLAIMS REVEALED", 160, 58, 4);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    char hbuf[24], gbuf[24];
+    snprintf(hbuf, sizeof(hbuf), "HOST:  %u letters", hostClaim);
+    snprintf(gbuf, sizeof(gbuf), "GUEST: %u letters", guestClaim);
+    display.drawString(hbuf, 160, 120, 4);
+    display.drawString(gbuf, 160, 158, 4);
+
+    uint8_t bigger = (hostClaim >= guestClaim) ? hostClaim : guestClaim;
+    bool hostFirst = (hostClaim >= guestClaim);
+    display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    char who[24];
+    snprintf(who, sizeof(who), "%s presents first",
+             hostFirst ? "HOST" : "GUEST");
+    display.drawString(who, 160, 195, 2);
+    (void)bigger;
+}
+
+static void renderCountdownLetPresenting(const CountdownWireState& state,
+                                          const flip7::countdown::LettersRoundProjection& proj,
+                                          bool isPresenter,
+                                          const char* word, uint8_t wordLen,
+                                          bool sent) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+
+    // Build used-letter bitmask: count letters in word vs available
+    uint16_t usedMask = 0;
+    if (isPresenter && wordLen > 0) {
+        char pool[10]{};
+        memcpy(pool, proj.letters, proj.letterCount);
+        for (uint8_t wi = 0; wi < wordLen; ++wi) {
+            for (uint8_t ti = 0; ti < proj.letterCount; ++ti) {
+                if (!(usedMask >> ti & 1u) && pool[ti] == word[wi]) {
+                    usedMask |= (1u << ti);
+                    break;
+                }
+            }
+        }
+    }
+    renderLetterStrip(proj.letters, proj.letterCount, isPresenter && !sent,
+                      usedMask);
+
+    display.setTextDatum(MC_DATUM);
+    if (!isPresenter) {
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("Opponent is presenting...", 160, 110, 2);
+        if (wordLen > 0) {
+            // Show word being built in real-time (updated via wire)
+            char wbuf[12]{};
+            memcpy(wbuf, word, wordLen);
+            display.setTextColor(TFT_WHITE, TFT_BLACK);
+            display.drawString(wbuf, 160, 150, 4);
+        }
+        return;
+    }
+
+    // Word strip (building)
+    char wbuf[12]{};
+    memcpy(wbuf, word, wordLen);
+    display.fillRect(0, 95, 320, 40, TFT_BLACK);
+    display.drawRect(10, 98, 230, 34, TFT_DARKGREY);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.setTextDatum(ML_DATUM);
+    display.drawString(wordLen > 0 ? wbuf : "_", 18, 115, 4);
+    display.setTextDatum(MC_DATUM);
+
+    if (!sent) {
+        // CLEAR and PRESENT buttons
+        display.fillRoundRect(250, 98, 64, 34, 6, TFT_MAROON);
+        display.setTextColor(TFT_WHITE, TFT_MAROON);
+        display.drawString("CLR", 282, 115, 2);
+
+        uint16_t pbg = (wordLen > 0) ? TFT_DARKGREEN : TFT_DARKGREY;
+        display.fillRoundRect(95, 155, 130, 34, 8, pbg);
+        display.drawRoundRect(95, 155, 130, 34, 8, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, pbg);
+        display.drawString("PRESENT WORD", 160, 172, 2);
+    } else {
+        display.setTextColor(TFT_GREEN, TFT_BLACK);
+        display.drawString("Waiting for verification...", 160, 175, 2);
+    }
+}
+
+static void renderCountdownLetVerification(const CountdownWireState& state,
+                                             const char* word, uint8_t wordLen,
+                                             bool isVerifier, bool sent) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_CYAN, TFT_BLACK);
+    display.drawString(isVerifier ? "VERIFY WORD" : "Waiting for verification...",
+                       160, 55, 4);
+
+    // Show the word letter by letter in boxes
+    if (wordLen > 0) {
+        constexpr int16_t W = 30, H = 38, GAP = 4;
+        int16_t startX = static_cast<int16_t>(
+            (320 - wordLen * (W + GAP) + GAP) / 2);
+        display.setTextColor(TFT_WHITE, 0x18C3 /*dark teal*/);
+        for (uint8_t i = 0; i < wordLen; ++i) {
+            int16_t bx = static_cast<int16_t>(startX + i * (W + GAP));
+            display.fillRect(bx, 100, W, H, 0x18C3);
+            display.drawRect(bx, 100, W, H, TFT_WHITE);
+            char s[2] = {word[i], '\0'};
+            display.drawString(s, bx + W/2, 100 + H/2, 2);
+        }
+    }
+
+    if (isVerifier && !sent) {
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Is this in the dictionary?", 160, 158, 2);
+
+        display.fillRoundRect(20, 178, 120, 44, 10, TFT_DARKGREEN);
+        display.drawRoundRect(20, 178, 120, 44, 10, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+        display.drawString("YES", 80, 200, 4);
+
+        display.fillRoundRect(180, 178, 120, 44, 10, TFT_MAROON);
+        display.drawRoundRect(180, 178, 120, 44, 10, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, TFT_MAROON);
+        display.drawString("NO", 240, 200, 4);
+    }
+}
+
+static void renderCountdownLetResult(const CountdownWireState& state,
+                                      const flip7::countdown::LettersRoundProjection& proj,
+                                      bool accepted, const char* word,
+                                      uint8_t wordLen, int32_t points,
+                                      bool morePresentersComing) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+    renderLetterStrip(proj.letters, proj.letterCount);
+
+    display.setTextDatum(MC_DATUM);
+    if (accepted) {
+        display.setTextColor(TFT_GREEN, TFT_BLACK);
+        display.drawString("ACCEPTED!", 160, 65, 4);
+        char wbuf[12]{};
+        memcpy(wbuf, word, wordLen);
+        char detail[32];
+        snprintf(detail, sizeof(detail), "%s \u2014 %u letters", wbuf,
+                 static_cast<unsigned>(wordLen));
+        display.setTextColor(TFT_WHITE, TFT_BLACK);
+        display.drawString(detail, 160, 115, 2);
+        char ptsbuf[16];
+        snprintf(ptsbuf, sizeof(ptsbuf), "+%ld POINTS",
+                 static_cast<long>(points));
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString(ptsbuf, 160, 145, 4);
+    } else {
+        display.setTextColor(TFT_RED, TFT_BLACK);
+        display.drawString("REJECTED", 160, 90, 4);
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("0 POINTS", 160, 145, 4);
+    }
+    if (morePresentersComing) {
+        display.setTextColor(TFT_CYAN, TFT_BLACK);
+        display.drawString("Next up: opponent", 160, 198, 2);
+    }
+    (void)proj;
+}
+
+// ---------------------------------------------------------------------------
+// Conundrum render helpers
+// ---------------------------------------------------------------------------
+
+// Compute the pixel centre of the i-th letter in the circle.
+// Uses integer maths; accurate enough for a 320x240 touch screen.
+static void conCirclePos(uint8_t idx, uint8_t circleOrder[9],
+                          int16_t cx, int16_t cy, int16_t r,
+                          int16_t& outX, int16_t& outY) {
+    // Angles: 0° = top, clockwise.  i * 40°.
+    int32_t deg = static_cast<int32_t>(circleOrder[idx]) * 40 - 90;
+    float   rad = deg * 3.14159f / 180.0f;
+    outX = static_cast<int16_t>(cx + static_cast<int16_t>(r * cosf(rad)));
+    outY = static_cast<int16_t>(cy + static_cast<int16_t>(r * sinf(rad)));
+}
+
+static void renderCountdownConActive(const CountdownWireState& state,
+                                      const flip7::countdown::ConundrumRoundProjection& proj,
+                                      const ConUiState& con,
+                                      uint32_t elapsedMs) {
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, false);
+
+    constexpr int16_t CX = 160, CY = 125, CR = 75;
+    constexpr int16_t TW = 26, TH = 26;
+
+    // Hint
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    char hint[52]{};
+    strncpy(hint, proj.hint, 50);
+    display.drawString(hint, CX, 44, 2);
+
+    // "Good Try" flash
+    if (con.showGoodTry) {
+        display.setTextColor(TFT_ORANGE, TFT_BLACK);
+        display.drawString("Good try! Try again...", CX, 60, 2);
+    }
+
+    // Circular letter tiles
+    for (uint8_t i = 0; i < 9; ++i) {
+        int16_t tx, ty;
+        conCirclePos(i, const_cast<uint8_t*>(con.circleOrder), CX, CY, CR,
+                     tx, ty);
+        tx = static_cast<int16_t>(tx - TW / 2);
+        ty = static_cast<int16_t>(ty - TH / 2);
+
+        // Check if this position has been selected
+        bool sel = false;
+        for (uint8_t s = 0; s < con.selectedCount; ++s) {
+            if (con.selected[s] == i) { sel = true; break; }
+        }
+        uint16_t bg = sel ? TFT_DARKGREY : TFT_MAGENTA;
+        display.fillRoundRect(tx, ty, TW, TH, 4, bg);
+        display.drawRoundRect(tx, ty, TW, TH, 4, TFT_WHITE);
+        display.setTextColor(TFT_WHITE, bg);
+        // Map circle position to scramble letter via circleOrder
+        char s[2] = {proj.scramble[con.circleOrder[i]], '\0'};
+        display.drawString(s, tx + TW/2, ty + TH/2, 2);
+    }
+
+    // Reshuffle icon (top-right, outside header)
+    display.fillRoundRect(284, 38, 30, 22, 4, TFT_DARKGREY);
+    display.drawRoundRect(284, 38, 30, 22, 4, TFT_WHITE);
+    display.setTextColor(TFT_WHITE, TFT_DARKGREY);
+    display.drawString("~>", 299, 49, 2);
+
+    // Answer strip
+    for (uint8_t i = 0; i < 9; ++i) {
+        int16_t bx = static_cast<int16_t>(6 + i * 34);
+        uint16_t bg = (i < con.selectedCount) ? TFT_DARKCYAN : TFT_DARKGREY;
+        display.fillRect(bx, 205, 30, 28, bg);
+        display.drawRect(bx, 205, 30, 28, TFT_WHITE);
+        if (i < con.selectedCount) {
+            display.setTextDatum(MC_DATUM);
+            display.setTextColor(TFT_WHITE, bg);
+            char ch[2] = {proj.scramble[con.circleOrder[con.selected[i]]], '\0'};
+            display.drawString(ch, bx + 15, 219, 2);
+        }
+    }
+
+    // Timer (top-right corner of circle area)
+    renderCountdownAnimation(kCdTimerCX, kCdTimerCY, kCdTimerR,
+                             elapsedMs, 30000);
+}
+
+static void renderCountdownConResult(bool won, const char* solution) {
+    display.fillScreen(TFT_BLACK);
+    display.setTextDatum(MC_DATUM);
+    if (won) {
+        display.setTextColor(TFT_GREEN, TFT_BLACK);
+        display.drawString("CONUNDRUM SOLVED!", 160, 60, 4);
+        display.setTextColor(TFT_WHITE, TFT_BLACK);
+        display.drawString(solution, 160, 120, 4);
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString("YOU WIN! +10 POINTS", 160, 175, 4);
+    } else {
+        display.setTextColor(TFT_CYAN, TFT_BLACK);
+        display.drawString("CONUNDRUM SOLVED", 160, 60, 4);
+        display.setTextColor(TFT_WHITE, TFT_BLACK);
+        display.drawString(solution, 160, 120, 4);
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString("Good try!", 160, 175, 2);
+    }
+}
+
+static void renderCountdownConNoWinner(const char* solution) {
+    display.fillScreen(TFT_BLACK);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_RED, TFT_BLACK);
+    display.drawString("TIME'S UP", 160, 60, 4);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString("The answer was:", 160, 120, 2);
+    display.setTextColor(TFT_WHITE, TFT_BLACK);
+    display.drawString(solution, 160, 155, 4);
+    display.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    display.drawString("No points awarded", 160, 205, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Letters + Conundrum sub-phase dispatcher
+// ---------------------------------------------------------------------------
+static void renderCountdownLetConPhases(  // NOLINT
+    bool online, const CountdownWireState& state,
+    CountdownRoundSubPhase subPhase, uint32_t elapsed) {
+    using SubPhase = CountdownRoundSubPhase;
+
+    // Letters sub-phases
+    if (subPhase == SubPhase::LetPicking) {
+        flip7::countdown::LettersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownLetPicking(state, proj, letUi.showConsonants);
+        return;
+    }
+    if (subPhase == SubPhase::LetThinking) {
+        flip7::countdown::LettersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownLetThinking(state, proj, elapsed);
+        return;
+    }
+    if (subPhase == SubPhase::LetClaimEntry) {
+        flip7::countdown::LettersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownLetClaimEntry(state, proj,
+                                      letUi.claimLength, letUi.claimSent);
+        return;
+    }
+    if (subPhase == SubPhase::LetClaimReveal) {
+        flip7::countdown::LettersRoundProjection proj{};
+        uint8_t hClaim = 0, gClaim = 0;
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        auto* lr = countdownEngine.lettersRound();
+        if (lr) {
+            hClaim = lr->claimFor(state.hostBoardId);
+            gClaim = lr->claimFor(state.guestBoardId);
+        }
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownLetClaimReveal(state, proj, hClaim, gClaim);
+        return;
+    }
+    if (subPhase == SubPhase::LetPresentPlayerA ||
+        subPhase == SubPhase::LetPresentPlayerB) {
+        flip7::countdown::LettersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        bool presenterIsHost = letUi.presenterIsHost;
+        bool aPhase = (subPhase == SubPhase::LetPresentPlayerA);
+        bool isPresenter =
+            (aPhase && ((presenterIsHost && boardId == state.hostBoardId) ||
+                        (!presenterIsHost && boardId == state.guestBoardId))) ||
+            (!aPhase && ((presenterIsHost && boardId == state.guestBoardId) ||
+                         (!presenterIsHost && boardId == state.hostBoardId)));
+        bool inVerifyMode = letUi.presentationSent;
+        if (inVerifyMode) {
+            // Show verification UI to the other board; waiting for presenter
+            bool isVerifier = !isPresenter;
+            portENTER_CRITICAL(&gameMux);
+            auto* lr = countdownEngine.lettersRound();
+            uint32_t presenterBoardId =
+                (aPhase && presenterIsHost) ? state.hostBoardId
+                                             : state.guestBoardId;
+            const std::string& pw =
+                lr ? lr->presentedWordFor(presenterBoardId) : std::string{};
+            portEXIT_CRITICAL(&gameMux);
+            renderCountdownLetVerification(state, pw.c_str(),
+                                            static_cast<uint8_t>(pw.size()),
+                                            isVerifier, letUi.verificationSent);
+        } else {
+            renderCountdownLetPresenting(state, proj, isPresenter,
+                                          letUi.word, letUi.wordLen,
+                                          letUi.presentationSent);
+        }
+        return;
+    }
+    if (subPhase == SubPhase::LetResult) {
+        flip7::countdown::LettersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        portEXIT_CRITICAL(&gameMux);
+        // Show accepted/points from last verification result
+        bool accepted = letUi.verificationAnswer;
+        int32_t points = accepted
+            ? (letUi.claimLength == 9 ? 18 : letUi.claimLength)
+            : 0;
+        renderCountdownLetResult(state, proj, accepted,
+                                  letUi.word, letUi.wordLen,
+                                  points, false);
+        return;
+    }
+
+    // Conundrum sub-phases
+    if (subPhase == SubPhase::ConReady) {
+        renderCountdownIntro(state, elapsed);  // reuse intro screen
+        return;
+    }
+    if (subPhase == SubPhase::ConActive) {
+        // "Good Try" auto-clear after 1.5 seconds
+        if (conUi.showGoodTry && millis() - conUi.goodTryMs > 1500) {
+            conUi.showGoodTry = false;
+        }
+        flip7::countdown::ConundrumRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.conundrumProjection();
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownConActive(state, proj, conUi, elapsed);
+        return;
+    }
+    if (subPhase == SubPhase::ConResult) {
+        flip7::countdown::ConundrumRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.conundrumProjection();
+        portEXIT_CRITICAL(&gameMux);
+        bool won = (proj.winnerBoardId == boardId);
+        renderCountdownConResult(won, proj.scramble);  // show solution
+        return;
+    }
+    if (subPhase == SubPhase::ConResultNoWinner) {
+        flip7::countdown::ConundrumRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.conundrumProjection();
+        portEXIT_CRITICAL(&gameMux);
+        renderCountdownConNoWinner(proj.scramble);
+        return;
+    }
+    if (subPhase == SubPhase::HostTransfer ||
+        subPhase == SubPhase::HostTransferAck) {
+        display.fillScreen(TFT_BLACK);
+        renderCountdownRoundHeader(state, false);
+        display.setTextDatum(MC_DATUM);
+        bool isOldHost = (boardId != state.hostBoardId);
+        display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        display.drawString(isOldHost ? "TRANSFERRING HOST..."
+                                     : "ACKNOWLEDGED",
+                           160, 90, 4);
+        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+        display.drawString(isOldHost ? "Sending game state..."
+                                     : "State received. You are now the Host.",
+                           160, 150, 2);
+        if (subPhase == SubPhase::HostTransferAck) {
+            display.fillCircle(160, 195, 14, TFT_DARKGREEN);
+            display.drawCircle(160, 195, 14, TFT_WHITE);
+            display.setTextColor(TFT_WHITE, TFT_DARKGREEN);
+            display.drawString("OK", 160, 195, 2);
+        }
+        return;
+    }
+
+    // Generic fallback for any remaining sub-phase
+    display.fillScreen(TFT_BLACK);
+    renderCountdownRoundHeader(state, online);
+    display.setTextDatum(MC_DATUM);
+    display.setTextColor(TFT_YELLOW, TFT_BLACK);
+    display.drawString("IN ROUND", 160, 100, 4);
+    char spLabel[32];
+    snprintf(spLabel, sizeof(spLabel), "Sub-phase %u", state.roundSubPhase);
+    display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    display.drawString(spLabel, 160, 145, 2);
 }
 
 void renderScreen() {
@@ -2080,28 +3164,512 @@ void handleTouch() {
         }
         return;
     }
+    // --- NumPicking: chooser taps a large-count button (0-4) then CONFIRM ---
     if (mode == ScreenMode::Countdown &&
-        x >= kCountdownNewRoundX &&
-        x < kCountdownNewRoundX + kCountdownNewRoundWidth &&
-        y >= kCountdownNewRoundY &&
-        y < kCountdownNewRoundY + kCountdownNewRoundHeight) {
-        CountdownWireState countdownSnapshot{};
-        portENTER_CRITICAL(&gameMux);
-        countdownSnapshot = countdownState;
-        portEXIT_CRITICAL(&gameMux);
-        if (countdownStateReady && boardId == countdownSnapshot.hostBoardId &&
-            countdownSnapshot.phase != CountdownWirePhase::BetweenRounds) {
-            CountdownWireState advanced = countdownSnapshot;
-            if (advanceCountdownRound(advanced, boardId)) {
+        static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+            CountdownRoundSubPhase::NumPicking) {
+        // Large-count buttons: x = 16 + i*58, y = kCdLcY, w=kCdLcW, h=kCdLcH
+        if (y >= kCdLcY && y < kCdLcY + kCdLcH) {
+            for (uint8_t i = 0; i <= 4; ++i) {
+                int16_t bx = static_cast<int16_t>(16 + i * 58);
+                if (x >= bx && x < bx + kCdLcW &&
+                    boardId == countdownState.chooserBoardId) {
+                    numUi.largeCount = i;
+                    displayDirty = true;
+                    break;
+                }
+            }
+        }
+        // CONFIRM button: x=95..225, y=185..221
+        if (y >= 185 && y < 221 && x >= 95 && x < 225 &&
+            boardId == countdownState.chooserBoardId) {
+            // Chooser confirmed large count: transition to NumThinking
+            // Host starts the round in the engine; both advance sub-phase
+            CountdownWireState snap{};
+            portENTER_CRITICAL(&gameMux);
+            snap = countdownState;
+            portEXIT_CRITICAL(&gameMux);
+            if (countdownStateReady && boardId == snap.hostBoardId) {
+                auto random = flip7::countdown::makeRoundRandom(
+                    snap.gameId, snap.roundNumber);
                 portENTER_CRITICAL(&gameMux);
-                if (sameCountdownWireState(countdownState, countdownSnapshot)) {
-                    countdownState = advanced;
-                    countdownStateReady = true;
+                countdownEngine.startNextRound(
+                    flip7::countdown::RoundType::Numbers, random,
+                    numUi.largeCount);
+                portEXIT_CRITICAL(&gameMux);
+
+                CountdownWireState advanced = snap;
+                if (advanceCountdownSubPhase(
+                        advanced, boardId,
+                        CountdownRoundSubPhase::NumThinking)) {
+                    roundPhaseStartMs = millis();
+                    portENTER_CRITICAL(&gameMux);
+                    if (sameCountdownWireState(countdownState, snap)) {
+                        countdownState = advanced;
+                        countdownPendingDelivery = CountdownPendingDelivery{
+                            true, MessageType::CountdownState, advanced, 0};
+                        displayDirty = true;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+                }
+            }
+        }
+        return;
+    }
+
+    // --- NumClaimEntry: numpad interaction ---
+    if (mode == ScreenMode::Countdown &&
+        static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+            CountdownRoundSubPhase::NumClaimEntry &&
+        !numUi.claimSent) {
+        // Numpad rows: y = kCdPadY + row*(kCdPadH+kCdPadGap)
+        // Cols: x = kCdPadX + col*(kCdPadW+kCdPadGap)
+        for (int row = 0; row < 4; ++row) {
+            int16_t by = static_cast<int16_t>(kCdPadY + row * (kCdPadH + kCdPadGap));
+            if (y < by || y >= by + kCdPadH) continue;
+            for (int col = 0; col < 3; ++col) {
+                int16_t bx = static_cast<int16_t>(kCdPadX + col * (kCdPadW + kCdPadGap));
+                if (x < bx || x >= bx + kCdPadW) continue;
+                const int digits[4][3] = {{7,8,9},{4,5,6},{1,2,3},{0,-1,-2}};
+                int d = digits[row][col];
+                if (d >= 0) {
+                    int32_t next = numUi.draftValue * 10 + d;
+                    if (next <= 999) numUi.draftValue = next;
+                } else if (d == -1) {  // CLR
+                    numUi.draftValue = 0;
+                } else {  // SUBMIT (d==-2)
+                    // Send claim to engine (host) — locally mark sent
+                    portENTER_CRITICAL(&gameMux);
+                    auto* nr = countdownEngine.numbersRound();
+                    if (nr) nr->submitClaim(boardId, numUi.draftValue);
+                    portEXIT_CRITICAL(&gameMux);
+                    numUi.claimSent = true;
+                    // If host: also check if both claims are in and advance
+                    // (guest claim will come via action packet — handled later)
+                }
+                displayDirty = true;
+                break;
+            }
+            break;
+        }
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Letters sub-phase touch handlers
+    // -----------------------------------------------------------------------
+
+    // LetPicking: chooser taps vowel/consonant letter buttons or LOCK IN
+    if (mode == ScreenMode::Countdown &&
+        static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+            CountdownRoundSubPhase::LetPicking &&
+        boardId == countdownState.chooserBoardId) {
+
+        flip7::countdown::LettersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        portEXIT_CRITICAL(&gameMux);
+
+        // Tab toggle: VOWELS (x=5..105, y=50..78) / CONSONANTS (x=215..315)
+        if (y >= 50 && y < 78) {
+            if (x >= 5 && x < 105) { letUi.showConsonants = false; displayDirty = true; return; }
+            if (x >= 215 && x < 315) { letUi.showConsonants = true; displayDirty = true; return; }
+        }
+
+        char picked = 0;
+        bool isVowel = false;
+
+        if (!letUi.showConsonants) {
+            // Vowel buttons: A E I O U at x=10+i*60, y=95..139, W=50, H=44
+            if (y >= 95 && y < 139) {
+                const char vowels[5] = {'A','E','I','O','U'};
+                for (int i = 0; i < 5; ++i) {
+                    int16_t bx = static_cast<int16_t>(10 + i * 60);
+                    if (x >= bx && x < bx + 50) {
+                        picked  = vowels[i];
+                        isVowel = true;
+                        break;
+                    }
+                }
+            }
+        } else {
+            // Consonant keyboard: BCDFGH / JKLMNP / QRSTVW / XYZ
+            const char rows[4][7] = {
+                {'B','C','D','F','G','H', 0},
+                {'J','K','L','M','N','P', 0},
+                {'Q','R','S','T','V','W', 0},
+                {'X','Y','Z', 0, 0, 0,  0},
+            };
+            const int rowLen[4] = {6, 6, 6, 3};
+            constexpr int16_t W = 42, H = 32, GAP = 4;
+            for (int row = 0; row < 4; ++row) {
+                int16_t startX = static_cast<int16_t>(
+                    (320 - rowLen[row] * (W + GAP) + GAP) / 2);
+                int16_t by = static_cast<int16_t>(88 + row * (H + GAP));
+                if (y < by || y >= by + H) continue;
+                for (int col = 0; col < rowLen[row]; ++col) {
+                    int16_t bx = static_cast<int16_t>(startX + col * (W + GAP));
+                    if (x >= bx && x < bx + W && rows[row][col] != 0) {
+                        picked  = rows[row][col];
+                        isVowel = false;
+                        break;
+                    }
+                }
+                if (picked) break;
+            }
+        }
+
+        if (picked && proj.letterCount < 9) {
+            // Apply to engine and sync via wire
+            flip7::countdown::CommandContext ctx{boardId, 0};
+            std::vector<uint8_t> payload = {static_cast<uint8_t>(picked)};
+            portENTER_CRITICAL(&gameMux);
+            auto* lr = countdownEngine.lettersRound();
+            if (lr) {
+                lr->applyCommand(ctx,
+                    isVowel ? flip7::countdown::CommandType::LetPickVowel
+                             : flip7::countdown::CommandType::LetPickConsonant,
+                    payload);
+            }
+            portEXIT_CRITICAL(&gameMux);
+            displayDirty = true;
+
+            // Auto-advance to LetThinking when 9 letters are drawn (host only)
+            portENTER_CRITICAL(&gameMux);
+            auto proj2 = countdownEngine.lettersProjection();
+            bool done  = (proj2.letterCount >= 9);
+            portEXIT_CRITICAL(&gameMux);
+            if (done && boardId == countdownState.hostBoardId) {
+                CountdownWireState snap{};
+                portENTER_CRITICAL(&gameMux);
+                snap = countdownState;
+                portEXIT_CRITICAL(&gameMux);
+                CountdownWireState adv = snap;
+                if (advanceCountdownSubPhase(adv, boardId,
+                        CountdownRoundSubPhase::LetThinking)) {
+                    roundPhaseStartMs = millis();
+                    portENTER_CRITICAL(&gameMux);
+                    if (sameCountdownWireState(countdownState, snap)) {
+                        countdownState = adv;
+                        countdownPendingDelivery = CountdownPendingDelivery{
+                            true, MessageType::CountdownState, adv, 0};
+                        displayDirty = true;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+                }
+            }
+        }
+
+        // LOCK IN button: x=95..225, y=200..234 (when 9 letters)
+        if (proj.letterCount >= 9 && y >= 200 && y < 234 &&
+            x >= 95 && x < 225 && boardId == countdownState.hostBoardId) {
+            CountdownWireState snap{};
+            portENTER_CRITICAL(&gameMux);
+            snap = countdownState;
+            portEXIT_CRITICAL(&gameMux);
+            CountdownWireState adv = snap;
+            if (advanceCountdownSubPhase(adv, boardId,
+                    CountdownRoundSubPhase::LetThinking)) {
+                roundPhaseStartMs = millis();
+                portENTER_CRITICAL(&gameMux);
+                if (sameCountdownWireState(countdownState, snap)) {
+                    countdownState = adv;
                     countdownPendingDelivery = CountdownPendingDelivery{
-                        true, MessageType::CountdownState, advanced, 0};
+                        true, MessageType::CountdownState, adv, 0};
                     displayDirty = true;
                 }
                 portEXIT_CRITICAL(&gameMux);
+            }
+        }
+        return;
+    }
+
+    // LetClaimEntry: digit picker (1-9) + SUBMIT CLAIM
+    if (mode == ScreenMode::Countdown &&
+        static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+            CountdownRoundSubPhase::LetClaimEntry &&
+        !letUi.claimSent) {
+
+        // Digit row: y=130..164, x = (320 - 9*31+3)/2 + (d-1)*31
+        constexpr int16_t DW = 28, DH = 34, DY = 130, DGAP = 3;
+        int16_t startX = static_cast<int16_t>((320 - 9*(DW+DGAP)+DGAP) / 2);
+        if (y >= DY && y < DY + DH) {
+            for (int d = 1; d <= 9; ++d) {
+                int16_t bx = static_cast<int16_t>(startX + (d-1)*(DW+DGAP));
+                if (x >= bx && x < bx + DW) {
+                    letUi.claimLength = static_cast<uint8_t>(d);
+                    displayDirty = true;
+                    return;
+                }
+            }
+        }
+        // SUBMIT CLAIM button: x=95..225, y=180..214
+        if (y >= 180 && y < 214 && x >= 95 && x < 225 && letUi.claimLength > 0) {
+            portENTER_CRITICAL(&gameMux);
+            auto* lr = countdownEngine.lettersRound();
+            if (lr) lr->submitClaim(boardId, letUi.claimLength);
+            portEXIT_CRITICAL(&gameMux);
+            letUi.claimSent = true;
+            displayDirty = true;
+        }
+        return;
+    }
+
+    // LetPresenting: tile taps, CLR, PRESENT WORD
+    if (mode == ScreenMode::Countdown &&
+        (static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+             CountdownRoundSubPhase::LetPresentPlayerA ||
+         static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+             CountdownRoundSubPhase::LetPresentPlayerB) &&
+        !letUi.presentationSent) {
+
+        auto sp = static_cast<CountdownRoundSubPhase>(
+            countdownState.roundSubPhase);
+        bool aPhase = (sp == CountdownRoundSubPhase::LetPresentPlayerA);
+        bool isPresenter =
+            (aPhase && letUi.presenterIsHost &&
+             boardId == countdownState.hostBoardId) ||
+            (aPhase && !letUi.presenterIsHost &&
+             boardId == countdownState.guestBoardId) ||
+            (!aPhase && letUi.presenterIsHost &&
+             boardId == countdownState.guestBoardId) ||
+            (!aPhase && !letUi.presenterIsHost &&
+             boardId == countdownState.hostBoardId);
+        if (!isPresenter) return;
+
+        flip7::countdown::LettersRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.lettersProjection();
+        portEXIT_CRITICAL(&gameMux);
+
+        // Letter tile row: y=kCdTileY..kCdTileY+34
+        if (y >= kCdTileY && y < kCdTileY + 34 && letUi.wordLen < 9) {
+            constexpr int16_t W = 30, GAP = 4;
+            int16_t startX = static_cast<int16_t>(
+                (320 - proj.letterCount * (W + GAP) + GAP) / 2);
+            for (uint8_t ti = 0; ti < proj.letterCount; ++ti) {
+                int16_t tx = static_cast<int16_t>(startX + ti * (W + GAP));
+                if (x >= tx && x < tx + W) {
+                    letUi.word[letUi.wordLen++] = proj.letters[ti];
+                    displayDirty = true;
+                    return;
+                }
+            }
+        }
+        // CLR button: x=250..314, y=98..132
+        if (y >= 98 && y < 132 && x >= 250 && x < 314 && letUi.wordLen > 0) {
+            letUi.wordLen--;
+            displayDirty = true;
+            return;
+        }
+        // PRESENT WORD button: x=95..225, y=155..189
+        if (y >= 155 && y < 189 && x >= 95 && x < 225 && letUi.wordLen > 0) {
+            flip7::countdown::CommandContext ctx{boardId, 0};
+            std::string wstr(letUi.word, letUi.wordLen);
+            std::vector<uint8_t> payload(wstr.begin(), wstr.end());
+            portENTER_CRITICAL(&gameMux);
+            auto* lr = countdownEngine.lettersRound();
+            if (lr) lr->applyCommand(ctx,
+                flip7::countdown::CommandType::LetPresentComplete, payload);
+            portEXIT_CRITICAL(&gameMux);
+            letUi.presentationSent = true;
+            displayDirty = true;
+        }
+        return;
+    }
+
+    // LetVerification: YES/NO buttons (verifier only)
+    if (mode == ScreenMode::Countdown &&
+        (static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+             CountdownRoundSubPhase::LetPresentPlayerA ||
+         static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+             CountdownRoundSubPhase::LetPresentPlayerB) &&
+        letUi.presentationSent && !letUi.verificationSent) {
+
+        auto sp = static_cast<CountdownRoundSubPhase>(
+            countdownState.roundSubPhase);
+        bool aPhase = (sp == CountdownRoundSubPhase::LetPresentPlayerA);
+        bool presenterIsHost = letUi.presenterIsHost;
+        bool isVerifier =
+            !((aPhase && presenterIsHost && boardId == countdownState.hostBoardId) ||
+              (aPhase && !presenterIsHost && boardId == countdownState.guestBoardId) ||
+              (!aPhase && presenterIsHost && boardId == countdownState.guestBoardId) ||
+              (!aPhase && !presenterIsHost && boardId == countdownState.hostBoardId));
+        if (!isVerifier) return;
+
+        // YES: x=20..140, y=178..222
+        if (y >= 178 && y < 222 && x >= 20 && x < 140) {
+            letUi.verificationAnswer = true;
+            letUi.verificationSent   = true;
+            flip7::countdown::CommandContext ctx{boardId, 0};
+            std::vector<uint8_t> payload = {1};
+            portENTER_CRITICAL(&gameMux);
+            auto* lr = countdownEngine.lettersRound();
+            if (lr) lr->applyCommand(ctx,
+                flip7::countdown::CommandType::LetVerifyWord, payload);
+            portEXIT_CRITICAL(&gameMux);
+            // Host advances to LetResult or PlayerB
+            if (boardId == countdownState.hostBoardId) {
+                CountdownWireState snap{};
+                portENTER_CRITICAL(&gameMux);
+                snap = countdownState;
+                portEXIT_CRITICAL(&gameMux);
+                CountdownWireState adv = snap;
+                auto nextSP = aPhase ? CountdownRoundSubPhase::LetPresentPlayerB
+                                     : CountdownRoundSubPhase::LetResult;
+                if (advanceCountdownSubPhase(adv, boardId, nextSP)) {
+                    roundPhaseStartMs = millis();
+                    letUi = LetUiState{};  // reset for next presenter
+                    portENTER_CRITICAL(&gameMux);
+                    if (sameCountdownWireState(countdownState, snap)) {
+                        countdownState = adv;
+                        countdownPendingDelivery = CountdownPendingDelivery{
+                            true, MessageType::CountdownState, adv, 0};
+                        displayDirty = true;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+                }
+            }
+            displayDirty = true;
+            return;
+        }
+        // NO: x=180..300, y=178..222
+        if (y >= 178 && y < 222 && x >= 180 && x < 300) {
+            letUi.verificationAnswer = false;
+            letUi.verificationSent   = true;
+            flip7::countdown::CommandContext ctx{boardId, 0};
+            std::vector<uint8_t> payload = {0};
+            portENTER_CRITICAL(&gameMux);
+            auto* lr = countdownEngine.lettersRound();
+            if (lr) lr->applyCommand(ctx,
+                flip7::countdown::CommandType::LetVerifyWord, payload);
+            portEXIT_CRITICAL(&gameMux);
+            if (boardId == countdownState.hostBoardId) {
+                CountdownWireState snap{};
+                portENTER_CRITICAL(&gameMux);
+                snap = countdownState;
+                portEXIT_CRITICAL(&gameMux);
+                CountdownWireState adv = snap;
+                auto nextSP = aPhase ? CountdownRoundSubPhase::LetPresentPlayerB
+                                     : CountdownRoundSubPhase::LetResult;
+                if (advanceCountdownSubPhase(adv, boardId, nextSP)) {
+                    roundPhaseStartMs = millis();
+                    letUi = LetUiState{};
+                    portENTER_CRITICAL(&gameMux);
+                    if (sameCountdownWireState(countdownState, snap)) {
+                        countdownState = adv;
+                        countdownPendingDelivery = CountdownPendingDelivery{
+                            true, MessageType::CountdownState, adv, 0};
+                        displayDirty = true;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+                }
+            }
+            displayDirty = true;
+            return;
+        }
+        return;
+    }
+
+    // -----------------------------------------------------------------------
+    // Conundrum touch handlers
+    // -----------------------------------------------------------------------
+
+    if (mode == ScreenMode::Countdown &&
+        static_cast<CountdownRoundSubPhase>(countdownState.roundSubPhase) ==
+            CountdownRoundSubPhase::ConActive) {
+
+        constexpr int16_t CX = 160, CY = 125, CR = 75;
+        constexpr int16_t TW = 26, TH = 26;
+
+        // Reshuffle button: x=284..314, y=38..60
+        if (y >= 38 && y < 60 && x >= 284 && x < 314) {
+            // Fisher-Yates shuffle using millis() as entropy
+            uint32_t seed = millis();
+            for (int i = 8; i > 0; --i) {
+                seed = seed * 1664525u + 1013904223u;
+                int j = seed % static_cast<uint32_t>(i + 1);
+                uint8_t tmp = conUi.circleOrder[i];
+                conUi.circleOrder[i] = conUi.circleOrder[j];
+                conUi.circleOrder[j] = tmp;
+            }
+            displayDirty = true;
+            return;
+        }
+
+        // Letter circles: check if tap is within TW/2 of any circle centre
+        flip7::countdown::ConundrumRoundProjection proj{};
+        portENTER_CRITICAL(&gameMux);
+        proj = countdownEngine.conundrumProjection();
+        portEXIT_CRITICAL(&gameMux);
+
+        for (uint8_t i = 0; i < 9; ++i) {
+            // Skip already selected
+            bool alreadySel = false;
+            for (uint8_t s = 0; s < conUi.selectedCount; ++s)
+                if (conUi.selected[s] == i) { alreadySel = true; break; }
+            if (alreadySel) continue;
+
+            int16_t tx, ty;
+            conCirclePos(i, conUi.circleOrder, CX, CY, CR, tx, ty);
+            if (abs(x - tx) <= TW/2 + 4 && abs(y - ty) <= TH/2 + 4) {
+                conUi.selected[conUi.selectedCount++] = i;
+                displayDirty = true;
+
+                if (conUi.selectedCount == 9) {
+                    // Build attempt string and submit
+                    char attempt[10]{};
+                    for (uint8_t s = 0; s < 9; ++s)
+                        attempt[s] = proj.scramble[conUi.circleOrder[conUi.selected[s]]];
+
+                    flip7::countdown::CommandContext ctx{boardId, 0};
+                    std::vector<uint8_t> payload(attempt, attempt + 9);
+                    bool correct = false;
+                    portENTER_CRITICAL(&gameMux);
+                    auto* cr = countdownEngine.conundrumRound();
+                    if (cr) {
+                        auto res = cr->applyCommand(ctx,
+                            flip7::countdown::CommandType::ConSubmitAttempt,
+                            payload);
+                        correct = res.accepted;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+
+                    if (correct && boardId == countdownState.hostBoardId) {
+                        // Advance to ConResult
+                        CountdownWireState snap{};
+                        portENTER_CRITICAL(&gameMux);
+                        snap = countdownState;
+                        portEXIT_CRITICAL(&gameMux);
+                        CountdownWireState adv = snap;
+                        if (advanceCountdownSubPhase(adv, boardId,
+                                CountdownRoundSubPhase::ConResult)) {
+                            portENTER_CRITICAL(&gameMux);
+                            if (sameCountdownWireState(countdownState, snap)) {
+                                countdownState = adv;
+                                countdownPendingDelivery = CountdownPendingDelivery{
+                                    true, MessageType::CountdownState, adv, 0};
+                                displayDirty = true;
+                            }
+                            portEXIT_CRITICAL(&gameMux);
+                        }
+                    } else if (!correct) {
+                        // Reset attempt — forced local reshuffle
+                        conUi.selectedCount = 0;
+                        conUi.showGoodTry   = true;
+                        conUi.goodTryMs     = millis();
+                        // Shuffle circle order
+                        uint32_t seed2 = millis();
+                        for (int si = 8; si > 0; --si) {
+                            seed2 = seed2 * 1664525u + 1013904223u;
+                            int j = seed2 % static_cast<uint32_t>(si + 1);
+                            uint8_t tmp = conUi.circleOrder[si];
+                            conUi.circleOrder[si] = conUi.circleOrder[j];
+                            conUi.circleOrder[j] = tmp;
+                        }
+                    }
+                }
+                return;
             }
         }
         return;
@@ -2125,10 +3693,13 @@ void handleTouch() {
             portENTER_CRITICAL(&gameMux);
             countdownSnapshot = countdownState;
             portEXIT_CRITICAL(&gameMux);
+            // Chooser (not host) picks the round type.
             if (countdownStateReady &&
-                boardId == countdownSnapshot.hostBoardId) {
+                boardId == countdownSnapshot.chooserBoardId) {
                 CountdownWireState selected = countdownSnapshot;
                 if (selectCountdownRoundType(selected, boardId, roundType)) {
+                    roundPhaseStartMs = millis();
+                    numUi = NumUiState{};  // reset per-round UI state
                     portENTER_CRITICAL(&gameMux);
                     if (sameCountdownWireState(countdownState,
                                                countdownSnapshot)) {
@@ -2446,6 +4017,282 @@ void loop() {
     refreshPeerIdentity();
     serviceProtocol(now);
     advanceMastermindRoundIfReady(now);
+
+    // --- Countdown sub-phase auto-advance (host only) and animation ticks ---
+    {
+        CountdownWireState snap{};
+        bool cdReady = false;
+        bool cdHost  = false;
+        portENTER_CRITICAL(&gameMux);
+        snap    = countdownState;
+        cdReady = countdownStateReady;
+        cdHost  = (boardId == countdownState.hostBoardId);
+        portEXIT_CRITICAL(&gameMux);
+
+        if (cdReady && snap.phase == CountdownWirePhase::InRound) {
+            using SP = CountdownRoundSubPhase;
+            auto sp = static_cast<SP>(snap.roundSubPhase);
+
+            // Force re-render during timed animation sub-phases so the arc updates.
+            bool animating = (sp == SP::Intro       ||
+                              sp == SP::NumThinking  ||
+                              sp == SP::LetThinking  ||
+                              sp == SP::ConActive);
+            if (animating) {
+                portENTER_CRITICAL(&gameMux);
+                displayDirty = true;
+                portEXIT_CRITICAL(&gameMux);
+            }
+
+            // Host-only: auto-advance when a timed phase expires.
+            if (cdHost) {
+                uint32_t elapsed = (now >= roundPhaseStartMs)
+                                       ? now - roundPhaseStartMs : 0;
+                CountdownRoundSubPhase nextSP = SP::None;
+                uint32_t timeout = 0;
+
+                if (sp == SP::Intro) {
+                    timeout = 5000;
+                    // Advance to picking sub-phase for the selected round type.
+                    auto rt = static_cast<flip7::countdown::RoundType>(
+                        snap.roundType);
+                    if (rt == flip7::countdown::RoundType::Numbers)
+                        nextSP = SP::NumPicking;
+                    else if (rt == flip7::countdown::RoundType::Letters)
+                        nextSP = SP::LetPicking;
+                    else
+                        nextSP = SP::ConReady;
+                } else if (sp == SP::NumThinking) {
+                    timeout = 30000;
+                    nextSP  = SP::NumClaimEntry;
+                } else if (sp == SP::LetThinking) {
+                    timeout = 30000;
+                    nextSP  = SP::LetClaimEntry;
+                } else if (sp == SP::ConActive) {
+                    timeout = 30000;
+                    nextSP  = SP::ConResultNoWinner;
+                }
+
+                if (nextSP != SP::None && elapsed >= timeout) {
+                    CountdownWireState advanced = snap;
+                    if (advanceCountdownSubPhase(advanced, boardId, nextSP)) {
+                        roundPhaseStartMs = now;
+                        portENTER_CRITICAL(&gameMux);
+                        if (sameCountdownWireState(countdownState, snap)) {
+                            countdownState = advanced;
+                            countdownPendingDelivery = CountdownPendingDelivery{
+                                true, MessageType::CountdownState, advanced, 0};
+                            displayDirty = true;
+                        }
+                        portEXIT_CRITICAL(&gameMux);
+                    }
+                }
+
+                // Auto-advance result sub-phases → BetweenRounds (with host handoff)
+                bool isResultPhase = (sp == SP::NumResult   ||
+                                      sp == SP::LetResult   ||
+                                      sp == SP::ConResult   ||
+                                      sp == SP::ConResultNoWinner);
+                if (isResultPhase && elapsed >= 3000) {
+                    // 1. Finalize the round in the engine and get the result.
+                    std::optional<flip7::countdown::RoundResult> result;
+                    portENTER_CRITICAL(&gameMux);
+                    if (countdownEngine.activeRound()) {
+                        std::vector<uint32_t> players = {snap.hostBoardId,
+                                                          snap.guestBoardId};
+                        result = countdownEngine.activeRound()->tryFinalize(players);
+                        if (result) {
+                            countdownEngine.recordRoundResult(*result);
+                        }
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+
+                    // 2. Detect host change; build updated wire state.
+                    uint32_t newHostId{};
+                    uint32_t newChooserId{};
+                    int32_t newHostScore{};
+                    int32_t newGuestScore{};
+                    portENTER_CRITICAL(&gameMux);
+                    newHostId     = countdownEngine.hostBoardId();
+                    newChooserId  = countdownEngine.chooserBoardId();
+                    newHostScore  = countdownEngine.hostPlayer().score;
+                    newGuestScore = countdownEngine.guestPlayer().score;
+                    portEXIT_CRITICAL(&gameMux);
+
+                    bool hostChanged = (newHostId != snap.hostBoardId);
+
+                    CountdownWireState updated = snap;
+                    ++updated.revision;
+                    ++updated.roundNumber;
+                    updated.chooserBoardId = newChooserId;
+                    updated.hostTerm      += hostChanged ? 1 : 0;
+
+                    // Swap host/guest scores and IDs if leadership transferred.
+                    if (hostChanged) {
+                        updated.hostBoardId  = newHostId;
+                        updated.guestBoardId = snap.hostBoardId;
+                        updated.hostScore    = newGuestScore;
+                        updated.guestScore   = newHostScore;
+                        updated.roundSubPhase =
+                            static_cast<uint8_t>(SP::HostTransfer);
+                    } else {
+                        updated.hostScore    = newHostScore;
+                        updated.guestScore   = newGuestScore;
+                        updated.roundSubPhase = 0;
+                        updated.phase        = CountdownWirePhase::BetweenRounds;
+                    }
+
+                    roundPhaseStartMs = now;
+                    // Reset per-round UI
+                    numUi = NumUiState{};
+                    letUi = LetUiState{};
+                    conUi = ConUiState{};
+
+                    portENTER_CRITICAL(&gameMux);
+                    if (sameCountdownWireState(countdownState, snap)) {
+                        countdownState = updated;
+                        countdownPendingDelivery = CountdownPendingDelivery{
+                            true, MessageType::CountdownState, updated, 0};
+                        displayDirty = true;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+                }
+
+                // HostTransfer: after 2s animation, commit and go to BetweenRounds
+                if (sp == SP::HostTransfer && elapsed >= 2000) {
+                    CountdownWireState committed = snap;
+                    committed.roundSubPhase = 0;
+                    committed.phase         = CountdownWirePhase::BetweenRounds;
+                    ++committed.revision;
+                    roundPhaseStartMs = now;
+                    portENTER_CRITICAL(&gameMux);
+                    if (sameCountdownWireState(countdownState, snap)) {
+                        countdownState = committed;
+                        countdownPendingDelivery = CountdownPendingDelivery{
+                            true, MessageType::CountdownState, committed, 0};
+                        displayDirty = true;
+                    }
+                    portEXIT_CRITICAL(&gameMux);
+                }
+
+                // NumClaimEntry: if both claims are in (host side), auto-advance
+                if (sp == SP::NumClaimEntry && cdHost) {
+                    portENTER_CRITICAL(&gameMux);
+                    auto* nr = countdownEngine.numbersRound();
+                    bool both = nr && nr->bothClaimsSubmitted();
+                    portEXIT_CRITICAL(&gameMux);
+                    if (both) {
+                        CountdownWireState advanced = snap;
+                        if (advanceCountdownSubPhase(advanced, boardId,
+                                SP::NumClaimReveal)) {
+                            roundPhaseStartMs = now;
+                            portENTER_CRITICAL(&gameMux);
+                            if (sameCountdownWireState(countdownState, snap)) {
+                                countdownState = advanced;
+                                countdownPendingDelivery = CountdownPendingDelivery{
+                                    true, MessageType::CountdownState, advanced, 0};
+                                displayDirty = true;
+                            }
+                            portEXIT_CRITICAL(&gameMux);
+                        }
+                    }
+                }
+
+                // NumClaimReveal: after 2s, advance to presentation
+                if (sp == SP::NumClaimReveal && elapsed >= 2000) {
+                    CountdownWireState advanced = snap;
+                    if (advanceCountdownSubPhase(advanced, boardId,
+                            SP::NumPresentPlayerA)) {
+                        roundPhaseStartMs = now;
+                        portENTER_CRITICAL(&gameMux);
+                        if (sameCountdownWireState(countdownState, snap)) {
+                            countdownState = advanced;
+                            countdownPendingDelivery = CountdownPendingDelivery{
+                                true, MessageType::CountdownState, advanced, 0};
+                            displayDirty = true;
+                        }
+                        portEXIT_CRITICAL(&gameMux);
+                    }
+                }
+
+                // LetClaimEntry: both claims in → reveal
+                if (sp == SP::LetClaimEntry && cdHost) {
+                    portENTER_CRITICAL(&gameMux);
+                    auto* lr = countdownEngine.lettersRound();
+                    bool both = lr && lr->bothClaimsSubmitted();
+                    portEXIT_CRITICAL(&gameMux);
+                    if (both) {
+                        CountdownWireState advanced = snap;
+                        if (advanceCountdownSubPhase(advanced, boardId,
+                                SP::LetClaimReveal)) {
+                            roundPhaseStartMs = now;
+                            portENTER_CRITICAL(&gameMux);
+                            if (sameCountdownWireState(countdownState, snap)) {
+                                countdownState = advanced;
+                                countdownPendingDelivery = CountdownPendingDelivery{
+                                    true, MessageType::CountdownState, advanced, 0};
+                                displayDirty = true;
+                            }
+                            portEXIT_CRITICAL(&gameMux);
+                        }
+                    }
+                }
+
+                // LetClaimReveal: after 2s → first presentation
+                if (sp == SP::LetClaimReveal && elapsed >= 2000) {
+                    // Determine presenter order from claims
+                    portENTER_CRITICAL(&gameMux);
+                    auto* lr = countdownEngine.lettersRound();
+                    uint8_t hc = lr ? lr->claimFor(snap.hostBoardId) : 0;
+                    uint8_t gc = lr ? lr->claimFor(snap.guestBoardId) : 0;
+                    portEXIT_CRITICAL(&gameMux);
+                    letUi.presenterIsHost =
+                        (hc >= gc);  // ties: host presents first
+                    CountdownWireState advanced = snap;
+                    if (advanceCountdownSubPhase(advanced, boardId,
+                            SP::LetPresentPlayerA)) {
+                        roundPhaseStartMs = now;
+                        portENTER_CRITICAL(&gameMux);
+                        if (sameCountdownWireState(countdownState, snap)) {
+                            countdownState = advanced;
+                            countdownPendingDelivery = CountdownPendingDelivery{
+                                true, MessageType::CountdownState, advanced, 0};
+                            displayDirty = true;
+                        }
+                        portEXIT_CRITICAL(&gameMux);
+                    }
+                }
+
+                // ConReady: after 2s → ConActive
+                if (sp == SP::ConReady && elapsed >= 2000) {
+                    // Start conundrum round in engine
+                    portENTER_CRITICAL(&gameMux);
+                    auto random = flip7::countdown::makeRoundRandom(
+                        snap.gameId, snap.roundNumber);
+                    countdownEngine.startNextRound(
+                        flip7::countdown::RoundType::Conundrum, random);
+                    // Reset conundrum circle order
+                    for (uint8_t ci = 0; ci < 9; ++ci) conUi.circleOrder[ci] = ci;
+                    portEXIT_CRITICAL(&gameMux);
+
+                    CountdownWireState advanced = snap;
+                    if (advanceCountdownSubPhase(advanced, boardId,
+                            SP::ConActive)) {
+                        roundPhaseStartMs = now;
+                        portENTER_CRITICAL(&gameMux);
+                        if (sameCountdownWireState(countdownState, snap)) {
+                            countdownState = advanced;
+                            countdownPendingDelivery = CountdownPendingDelivery{
+                                true, MessageType::CountdownState, advanced, 0};
+                            displayDirty = true;
+                        }
+                        portEXIT_CRITICAL(&gameMux);
+                    }
+                }
+            }
+        }
+    }
+
     handleTouch();
 
     const bool online = peerOnline();

@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "flip7/countdown_engine.hpp"
+
 #include "mastermind_logic.h"
 #include "puzzle_logic.h"
 #include "countdown_wire.h"
@@ -47,6 +49,8 @@ enum class MessageType : uint8_t {
     CountdownFullState,
     CountdownAck,
     CountdownRequestState,
+    CountdownAction,            // in-round event (PickLetter, PresentStep, etc.)
+    CountdownPuzzleDescriptor,  // host sends versioned seed + checksum
 };
 
 struct PacketHeader {
@@ -131,6 +135,33 @@ struct CountdownStatePacket {
     CountdownWireState state;
 };
 
+// Full round state — used for letter sync during picking and reconciliation.
+// letters[0..letterCount-1] holds the 9 drawn letters; rest are zero.
+struct CountdownFullStatePacket {
+    PacketHeader       header;
+    CountdownWireState wireState;
+    char               letters[9];
+    uint8_t            letterCount;
+    uint8_t            reserved[2];  // must be zero
+};
+
+// In-round event packet — lightweight peer-to-peer action transport.
+// actionType is cast to flip7::countdown::CommandType.
+// payload encoding is command-specific (see CommandType comments in engine).
+struct CountdownActionPacket {
+    PacketHeader header;
+    uint8_t      actionType;    // flip7::countdown::CommandType
+    uint8_t      payload[15];   // command-specific encoding
+};
+
+// Versioned puzzle descriptor — host sends after generating a round;
+// guest verifies checksum before using the seeded content.
+struct CountdownPuzzleDescriptorPacket {
+    PacketHeader                          header;
+    uint32_t                              gameId;
+    flip7::countdown::PuzzleDescriptor    descriptor;
+};
+
 struct CountdownAckPacket {
     PacketHeader header;
     uint32_t targetBoardId;
@@ -165,8 +196,14 @@ static_assert(sizeof(GameAckPacket) == 40,
               "GameAckPacket wire format changed");
 static_assert(sizeof(MastermindStateRequestPacket) == 32,
               "MastermindStateRequestPacket wire format changed");
-static_assert(sizeof(CountdownStatePacket) == 52,
+static_assert(sizeof(CountdownStatePacket) == 60,
               "CountdownStatePacket wire format changed");
+static_assert(sizeof(CountdownFullStatePacket) == 72,
+              "CountdownFullStatePacket wire format changed");
+static_assert(sizeof(CountdownActionPacket) == 36,
+              "CountdownActionPacket wire format changed");
+static_assert(sizeof(CountdownPuzzleDescriptorPacket) == 36,
+              "CountdownPuzzleDescriptorPacket wire format changed");
 static_assert(sizeof(CountdownAckPacket) == 40,
               "CountdownAckPacket wire format changed");
 static_assert(sizeof(CountdownStateRequestPacket) == 32,
