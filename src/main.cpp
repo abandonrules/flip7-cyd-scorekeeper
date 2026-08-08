@@ -44,7 +44,6 @@ constexpr KnownBoard kKnownBoards[] = {
     {0x6AF4E9D4, {0xD4, 0xE9, 0xF4, 0x6A, 0xF4, 0xFC}},
     {0xE7D8CBB0, {0xB0, 0xCB, 0xD8, 0xE7, 0x1E, 0xD4}},
 };
-
 constexpr int16_t kBoardAreaTop = 43;
 constexpr int16_t kBoardAreaWidth = 304;
 constexpr int16_t kBoardAreaHeight = 162;
@@ -65,6 +64,7 @@ constexpr uint16_t kMastermindColors[kMastermindColorCount + 1] = {
     TFT_DARKGREY, TFT_RED, TFT_ORANGE, TFT_YELLOW,
     TFT_GREEN, TFT_CYAN, TFT_MAGENTA,
 };
+
 TFT_eSPI display;
 SPIClass touchSpi(VSPI);
 XPT2046_Touchscreen touch(kTouchCsPin, kTouchIrqPin);
@@ -128,6 +128,7 @@ MastermindState mastermindState{};
 MastermindPendingDelivery mastermindPendingDelivery{};
 MastermindPendingAck mastermindPendingAck{};
 MastermindCode draftCode{{1, 1, 1, 1}};
+MastermindCode lastSubmittedGuess{{1, 1, 1, 1}};
 ScreenMode screenMode = ScreenMode::Home;
 ActiveGameClock activeGame{kNoActiveGameEpoch, ActiveGameKind::Home};
 uint32_t boardId = 0;
@@ -163,6 +164,7 @@ bool sendMastermindFullStateSoon = false;
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
+// MastermindPhase lastAdoptedMastermindPhase — reserved for future use
 
 PacketHeader makeHeader(MessageType type) {
     return PacketHeader{kProtocolMagic, kProtocolVersion, type, boardId,
@@ -768,13 +770,18 @@ bool validMastermindIdentity(const MastermindState& state) {
     return state.hostBoardId == host && state.guestBoardId == guest;
 }
 
-void prepareMastermindDraft() {
-    draftCode = MastermindCode{{1, 1, 1, 1}};
+void prepareMastermindDraft(const MastermindState& state) {
+    if (state.phase == MastermindPhase::Guessing &&
+        state.codemakerBoardId != boardId) {
+        draftCode = lastSubmittedGuess;
+    } else {
+        draftCode = MastermindCode{{1, 1, 1, 1}};
+    }
     selectedPeg = 0;
 }
 
 void noteMastermindPhase(const MastermindState& state) {
-    prepareMastermindDraft();
+    prepareMastermindDraft(state);
     if (state.phase == MastermindPhase::RoundComplete) {
         mastermindCompletedAtMs = millis();
     }
@@ -1341,11 +1348,16 @@ void sendMastermindStateRequest() {
         digest = mastermindStateDigest(mastermindState);
     }
     portEXIT_CRITICAL(&gameMux);
+    if (protocolMutex == nullptr ||
+        xSemaphoreTake(protocolMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
     MastermindStateRequestPacket packet{
         makeHeader(MessageType::MastermindRequestState), gameId, revision,
         digest};
     esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
                  sizeof(packet));
+    xSemaphoreGive(protocolMutex);
 }
 
 void refreshPeerIdentity() {
@@ -1564,6 +1576,7 @@ void handleMastermindTouch(int16_t x, int16_t y) {
         if (x >= 211 && x <= 303 && y >= 185 && y <= 224) {
             MastermindState next = snapshot;
             if (submitMastermindGuess(next, draftCode, boardId)) {
+                lastSubmittedGuess = draftCode;
                 commitMastermindState(next, MessageType::MastermindState,
                                       &snapshot);
             }
@@ -1632,6 +1645,10 @@ void handleTouch() {
                 startMastermind();
             }
         }
+        return;
+    }
+    if (mode == ScreenMode::Mastermind) {
+        handleMastermindTouch(x, y);
         return;
     }
     if (mode == ScreenMode::Mastermind) {
