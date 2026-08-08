@@ -9,6 +9,7 @@ enum class ActiveGameKind : uint8_t {
     Home = 0,
     Puzzle,
     Mastermind,
+    Countdown,
 };
 
 struct ActiveGameClock {
@@ -45,9 +46,10 @@ inline bool shouldSendActiveGameState(
 }
 
 inline uint32_t nextActiveGameEpoch(uint32_t activeEpoch,
-                                    uint32_t puzzleEpoch,
-                                    uint32_t mastermindEpoch) {
+                                    uint32_t puzzleEpoch = 0,
+                                    uint32_t mastermindEpoch = 0,
+                                    uint32_t countdownEpoch = 0) {
     const uint32_t latest =
-        std::max(activeEpoch, std::max(puzzleEpoch, mastermindEpoch));
+        std::max(activeEpoch, std::max(puzzleEpoch, std::max(mastermindEpoch, countdownEpoch)));
     return latest == UINT32_MAX ? kNoActiveGameEpoch : latest + 1;
 }

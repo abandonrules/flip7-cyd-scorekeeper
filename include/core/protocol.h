@@ -3,19 +3,19 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "flip7/countdown_engine.hpp"
-
 #include "mastermind_logic.h"
 #include "puzzle_logic.h"
-#include "countdown_wire.h"
 
 constexpr uint32_t kProtocolMagic = 0x46374359;
 constexpr uint8_t kProtocolVersion = 7;
 
+// Returns true when candidate is strictly newer than previous using
+// wrapping signed arithmetic (handles sequence-number rollover).
 inline bool isSequenceNewer(uint32_t candidate, uint32_t previous) {
     return static_cast<int32_t>(candidate - previous) > 0;
 }
 
+// Returns true when candidate matches any entry in the sessions array.
 inline bool hasSeenSession(uint32_t candidate, const uint32_t* sessions,
                            size_t count) {
     for (size_t index = 0; index < count; ++index) {
@@ -26,6 +26,8 @@ inline bool hasSeenSession(uint32_t candidate, const uint32_t* sessions,
     return false;
 }
 
+// Returns true when the candidate session ID is acceptable: first contact,
+// known session, or unknown session from an offline peer.
 inline bool canUsePeerSession(uint32_t current, uint32_t candidate,
                               bool peerOffline,
                               const uint32_t* retired, size_t retiredCount) {
@@ -34,6 +36,7 @@ inline bool canUsePeerSession(uint32_t current, uint32_t candidate,
             (peerOffline && !hasSeenSession(candidate, retired, retiredCount)));
 }
 
+// All ESP-NOW packet types exchanged between CYD boards.
 enum class MessageType : uint8_t {
     Heartbeat = 1,
     ScoreUpdate,
@@ -45,14 +48,10 @@ enum class MessageType : uint8_t {
     MastermindFullState,
     MastermindAck,
     MastermindRequestState,
-    CountdownState,
-    CountdownFullState,
-    CountdownAck,
-    CountdownRequestState,
-    CountdownAction,            // in-round event (PickLetter, PresentStep, etc.)
-    CountdownPuzzleDescriptor,  // host sends versioned seed + checksum
 };
 
+// Fixed-size header prepended to every protocol packet.
+// Fixed-size header prepended to every protocol packet.
 struct PacketHeader {
     uint32_t magic;
     uint8_t version;
@@ -62,11 +61,13 @@ struct PacketHeader {
     uint32_t sequence;
 };
 
+// Keepalive packet; carries uptime for diagnostics.
 struct HeartbeatPacket {
     PacketHeader header;
     uint32_t uptimeMs;
 };
 
+// Carries a full PuzzleState snapshot for initial sync or reconciliation.
 struct PuzzleStatePacket {
     PacketHeader header;
     ::PuzzleState state;
@@ -91,6 +92,8 @@ static_assert(offsetof(::PuzzleState, turnBoardId) == 44,
 static_assert(sizeof(::PuzzleState) == 48, "PuzzleState size changed");
 static_assert(offsetof(PacketHeader, senderId) == 8,
               "PacketHeader senderId offset changed");
+
+// Acknowledgement for a PuzzleState or FullState delivery.
 struct PuzzleAckPacket {
     PacketHeader header;
     uint32_t targetBoardId;
@@ -101,6 +104,7 @@ struct PuzzleAckPacket {
     uint8_t reserved[3];
 };
 
+// Requests the peer to send a full state snapshot on divergence.
 struct StateRequestPacket {
     PacketHeader header;
     uint32_t gameId;
@@ -108,11 +112,13 @@ struct StateRequestPacket {
     uint32_t stateDigest;
 };
 
+// Carries a full MastermindState snapshot.
 struct GameStatePacket {
     PacketHeader header;
     MastermindState state;
 };
 
+// Acknowledgement for a MastermindState or MastermindFullState delivery.
 struct GameAckPacket {
     PacketHeader header;
     uint32_t targetBoardId;
@@ -123,56 +129,8 @@ struct GameAckPacket {
     uint8_t reserved[3];
 };
 
+// Requests the peer to resend its authoritative MastermindState.
 struct MastermindStateRequestPacket {
-    PacketHeader header;
-    uint32_t gameId;
-    uint32_t revision;
-    uint32_t stateDigest;
-};
-
-struct CountdownStatePacket {
-    PacketHeader header;
-    CountdownWireState state;
-};
-
-// Full round state — used for letter sync during picking and reconciliation.
-// letters[0..letterCount-1] holds the 9 drawn letters; rest are zero.
-struct CountdownFullStatePacket {
-    PacketHeader       header;
-    CountdownWireState wireState;
-    char               letters[9];
-    uint8_t            letterCount;
-    uint8_t            reserved[2];  // must be zero
-};
-
-// In-round event packet — lightweight peer-to-peer action transport.
-// actionType is cast to flip7::countdown::CommandType.
-// payload encoding is command-specific (see CommandType comments in engine).
-struct CountdownActionPacket {
-    PacketHeader header;
-    uint8_t      actionType;    // flip7::countdown::CommandType
-    uint8_t      payload[15];   // command-specific encoding
-};
-
-// Versioned puzzle descriptor — host sends after generating a round;
-// guest verifies checksum before using the seeded content.
-struct CountdownPuzzleDescriptorPacket {
-    PacketHeader                          header;
-    uint32_t                              gameId;
-    flip7::countdown::PuzzleDescriptor    descriptor;
-};
-
-struct CountdownAckPacket {
-    PacketHeader header;
-    uint32_t targetBoardId;
-    uint32_t gameId;
-    uint32_t revision;
-    uint32_t stateDigest;
-    MessageType acknowledgedType;
-    uint8_t reserved[3];
-};
-
-struct CountdownStateRequestPacket {
     PacketHeader header;
     uint32_t gameId;
     uint32_t revision;
@@ -196,15 +154,3 @@ static_assert(sizeof(GameAckPacket) == 40,
               "GameAckPacket wire format changed");
 static_assert(sizeof(MastermindStateRequestPacket) == 32,
               "MastermindStateRequestPacket wire format changed");
-static_assert(sizeof(CountdownStatePacket) == 60,
-              "CountdownStatePacket wire format changed");
-static_assert(sizeof(CountdownFullStatePacket) == 72,
-              "CountdownFullStatePacket wire format changed");
-static_assert(sizeof(CountdownActionPacket) == 36,
-              "CountdownActionPacket wire format changed");
-static_assert(sizeof(CountdownPuzzleDescriptorPacket) == 36,
-              "CountdownPuzzleDescriptorPacket wire format changed");
-static_assert(sizeof(CountdownAckPacket) == 40,
-              "CountdownAckPacket wire format changed");
-static_assert(sizeof(CountdownStateRequestPacket) == 32,
-              "CountdownStateRequestPacket wire format changed");

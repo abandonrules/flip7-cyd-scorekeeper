@@ -1,0 +1,16 @@
+{
+  "name": "Flip7 CYD Scorekeeper",
+  "version": "3b5354a5d1c4",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "parts": [
+        {
+          "path": "firmware/flip7-cyd-scorekeeper-cyd.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

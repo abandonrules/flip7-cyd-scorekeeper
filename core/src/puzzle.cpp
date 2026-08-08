@@ -41,7 +41,7 @@ PuzzleState makeInitialPuzzle(uint32_t firstTurnBoardId, uint32_t gameId, const 
 }
 
 // Check if two positions are adjacent
-inline bool arePositionsAdjacent(const PuzzleState& state, uint8_t first, uint8_t second) {
+bool arePositionsAdjacent(const PuzzleState& state, uint8_t first, uint8_t second) {
     const uint8_t count = puzzleTileCount(state);
     if (first >= count || second >= count || state.columns == 0) return false;
 
@@ -57,7 +57,7 @@ inline bool arePositionsAdjacent(const PuzzleState& state, uint8_t first, uint8_
 }
 
 // Deterministic scramble using game ID as seed
-inline PuzzleState makeScrambledPuzzle(uint32_t firstTurnBoardId, uint32_t gameId, const PuzzleSpec& spec) {
+PuzzleState makeScrambledPuzzle(uint32_t firstTurnBoardId, uint32_t gameId, const PuzzleSpec& spec) {
     PuzzleState state = makeInitialPuzzle(firstTurnBoardId, gameId, spec);
     if (!isSupportedPuzzleSpec(spec)) return state;
 
@@ -106,7 +106,7 @@ inline PuzzleState makeScrambledPuzzle(uint32_t firstTurnBoardId, uint32_t gameI
 }
 
 // Check if puzzle arrangement is solvable
-inline bool isSolvablePuzzleArrangement(const PuzzleState& state) {
+bool isSolvablePuzzleArrangement(const PuzzleState& state) {
     const uint8_t count = puzzleTileCount(state);
     uint16_t inversions = 0;
 
@@ -138,7 +138,7 @@ inline bool isSolvablePuzzleArrangement(const PuzzleState& state) {
 }
 
 // Full validation
-inline bool isValidPuzzle(const PuzzleState& state) {
+bool isValidPuzzle(const PuzzleState& state) {
     const PuzzleSpec spec = {state.columns, state.rows, state.theme};
     if (!isSupportedPuzzleSpec(spec) ||
         (state.phase != PuzzlePhase::Playing && state.phase != PuzzlePhase::Exited) ||
@@ -159,7 +159,7 @@ inline bool isValidPuzzle(const PuzzleState& state) {
     return isSolvablePuzzleArrangement(state);
 }
 
-inline uint8_t findBlank(const PuzzleState& state) {
+uint8_t findBlank(const PuzzleState& state) {
     const uint8_t count = puzzleTileCount(state);
     for (uint8_t i = 0; i < count; ++i) {
         if (state.tiles[i] == 0) return i;
@@ -167,12 +167,12 @@ inline uint8_t findBlank(const PuzzleState& state) {
     return count;
 }
 
-inline bool isTileCorrect(const PuzzleState& state, uint8_t position) {
+bool isTileCorrect(const PuzzleState& state, uint8_t position) {
     const uint8_t count = puzzleTileCount(state);
     return position + 1 < count && state.tiles[position] == position + 1;
 }
 
-inline bool isPuzzleSolved(const PuzzleState& state) {
+bool isPuzzleSolved(const PuzzleState& state) {
     if (!isValidPuzzle(state) || state.phase != PuzzlePhase::Playing) return false;
     const uint8_t count = puzzleTileCount(state);
     for (uint8_t pos = 0; pos + 1 < count; ++pos) {
@@ -181,7 +181,7 @@ inline bool isPuzzleSolved(const PuzzleState& state) {
     return state.tiles[count - 1] == 0;
 }
 
-inline bool isSamePuzzle(const PuzzleState& first, const PuzzleState& second) {
+bool isSamePuzzle(const PuzzleState& first, const PuzzleState& second) {
     if (first.columns != second.columns || first.rows != second.rows ||
         first.theme != second.theme || first.phase != second.phase ||
         first.gameId != second.gameId || first.revision != second.revision ||
@@ -194,7 +194,7 @@ inline bool isSamePuzzle(const PuzzleState& first, const PuzzleState& second) {
     return true;
 }
 
-inline PuzzleVersionOrder comparePuzzleVersion(const PuzzleState& current, const PuzzleState& candidate) {
+PuzzleVersionOrder comparePuzzleVersion(const PuzzleState& current, const PuzzleState& candidate) {
     if (candidate.gameId != current.gameId) {
         return candidate.gameId > current.gameId ? PuzzleVersionOrder::Newer : PuzzleVersionOrder::Older;
     }
@@ -204,7 +204,7 @@ inline PuzzleVersionOrder comparePuzzleVersion(const PuzzleState& current, const
     return PuzzleVersionOrder::Same;
 }
 
-inline uint32_t puzzleStateDigest(const PuzzleState& state) {
+uint32_t puzzleStateDigest(const PuzzleState& state) {
     uint32_t digest = 2166136261u;
     auto addByte = [&digest](uint8_t value) {
         digest ^= value;
@@ -224,11 +224,11 @@ inline uint32_t puzzleStateDigest(const PuzzleState& state) {
     return digest;
 }
 
-inline bool isDeliverySuperseded(const PuzzleState& pending, const PuzzleState& observed) {
+bool isDeliverySuperseded(const PuzzleState& pending, const PuzzleState& observed) {
     return pending.gameId == observed.gameId && pending.revision < observed.revision;
 }
 
-inline ReconciliationAction decideReconciliation(
+ReconciliationAction decideReconciliation(
     const PuzzleState& local, uint32_t remoteGameId, uint32_t remoteRevision,
     uint32_t remoteDigest, bool localIsAuthority) {
     if (remoteGameId < local.gameId ||
@@ -246,7 +246,7 @@ inline ReconciliationAction decideReconciliation(
                             : ReconciliationAction::RequestFullState;
 }
 
-inline bool tryPuzzleMove(PuzzleState& state, uint8_t position,
+bool tryPuzzleMove(PuzzleState& state, uint8_t position,
                           uint32_t actorBoardId, uint32_t nextTurnBoardId) {
     if (!isValidPuzzle(state) || state.phase != PuzzlePhase::Playing ||
         state.turnBoardId != actorBoardId ||
@@ -264,7 +264,7 @@ inline bool tryPuzzleMove(PuzzleState& state, uint8_t position,
     return true;
 }
 
-inline bool exitPuzzle(PuzzleState& state, uint32_t actorBoardId, uint32_t otherBoardId) {
+bool exitPuzzle(PuzzleState& state, uint32_t actorBoardId, uint32_t otherBoardId) {
     if (!isValidPuzzle(state) || state.phase != PuzzlePhase::Playing ||
         actorBoardId == 0 || otherBoardId == 0 ||
         actorBoardId == otherBoardId || state.revision == UINT32_MAX ||
@@ -276,7 +276,7 @@ inline bool exitPuzzle(PuzzleState& state, uint32_t actorBoardId, uint32_t other
     return true;
 }
 
-inline bool applyPuzzleExitSignal(PuzzleState& current, const PuzzleState& candidate,
+bool applyPuzzleExitSignal(PuzzleState& current, const PuzzleState& candidate,
                                   uint32_t senderBoardId, uint32_t recipientBoardId) {
     if (!isValidPuzzle(current) || !isValidPuzzle(candidate) ||
         candidate.phase != PuzzlePhase::Exited ||
@@ -306,7 +306,7 @@ inline bool applyPuzzleExitSignal(PuzzleState& current, const PuzzleState& candi
     return true;
 }
 
-inline bool isValidRemoteTransition(const PuzzleState& current, const PuzzleState& incoming,
+bool isValidRemoteTransition(const PuzzleState& current, const PuzzleState& incoming,
                                     uint32_t senderBoardId, uint32_t recipientBoardId) {
     if (!isValidPuzzle(current) || !isValidPuzzle(incoming) ||
         current.phase != PuzzlePhase::Playing || incoming.phase != PuzzlePhase::Playing ||
@@ -334,7 +334,7 @@ inline bool isValidRemoteTransition(const PuzzleState& current, const PuzzleStat
     return true;
 }
 
-inline bool isValidPuzzleForParticipants(const PuzzleState& state,
+bool isValidPuzzleForParticipants(const PuzzleState& state,
                                          uint32_t firstBoardId, uint32_t secondBoardId) {
     if (!isValidPuzzle(state) || firstBoardId == 0 || secondBoardId == 0 ||
         firstBoardId == secondBoardId) return false;
@@ -347,7 +347,7 @@ inline bool isValidPuzzleForParticipants(const PuzzleState& state,
     return state.turnBoardId == expectedTurn;
 }
 
-inline bool shouldAdoptFullState(const PuzzleState& current, const PuzzleState& incoming,
+bool shouldAdoptFullState(const PuzzleState& current, const PuzzleState& incoming,
                                  uint32_t senderBoardId, uint32_t recipientBoardId) {
     if (!isValidPuzzleForParticipants(incoming, senderBoardId, recipientBoardId) ||
         incoming.phase != PuzzlePhase::Playing ||

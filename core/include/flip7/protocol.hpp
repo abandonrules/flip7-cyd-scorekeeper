@@ -24,6 +24,9 @@ constexpr size_t kStateRequestPacketSize = 32;
 constexpr size_t kGameStatePacketSize = 236;
 constexpr size_t kGameAckPacketSize = 40;
 constexpr size_t kMastermindStateRequestPacketSize = 32;
+constexpr size_t kCountdownStatePacketSize = 128;
+constexpr size_t kCountdownAckPacketSize = 40;
+constexpr size_t kCountdownStateRequestPacketSize = 32;
 
 // Game limits
 constexpr uint8_t kPuzzleMaxTiles = 30;
@@ -80,6 +83,11 @@ enum class MessageType : uint8_t {
     MastermindFullState = 8,
     MastermindAck = 9,
     MastermindRequestState = 10,
+    // Countdown
+    CountdownState = 11,
+    CountdownFullState = 12,
+    CountdownAck = 13,
+    CountdownRequestState = 14,
     // BLE-specific extensions (100+)
     BleCommand = 100,
     BleEvent = 101,
@@ -107,6 +115,7 @@ enum class ActiveGameKind : uint8_t {
     Home = 0,
     Puzzle = 1,
     Mastermind = 2,
+    Countdown = 3,
 };
 
 enum class PacketOrigin : uint8_t {
@@ -225,6 +234,79 @@ struct GameAckPacket {
 };
 
 struct MastermindStateRequestPacket {
+    PacketHeader header;
+    uint32_t gameId;
+    uint32_t revision;
+    uint32_t stateDigest;
+};
+
+// Countdown types
+constexpr uint8_t kCountdownMaxTiles = 6;
+constexpr uint8_t kCountdownMaxSteps = 16;
+constexpr uint8_t kCountdownMaxLetters = 9;
+
+enum class CountdownRoundType : uint8_t {
+    None = 0,
+    Numbers = 1,
+    Letters = 2,
+    Conundrum = 3,
+};
+
+enum class CountdownPhase : uint8_t {
+    Setup = 0,
+    InRound = 1,
+    BetweenRounds = 2,
+    MatchComplete = 3,
+};
+
+struct CountdownPlayerState {
+    int32_t score{0};
+};
+
+struct CountdownMatchState {
+    uint32_t gameId{0};
+    uint32_t hostBoardId{0};
+    uint32_t guestBoardId{0};
+    uint32_t chooserBoardId{0};
+    uint32_t hostTerm{1};
+    uint32_t roundNumber{0};
+    CountdownPhase phase{CountdownPhase::Setup};
+    CountdownRoundType activeRoundType{CountdownRoundType::None};
+    CountdownPlayerState hostPlayer;
+    CountdownPlayerState guestPlayer;
+    uint8_t reserved[6]{0};
+};
+
+struct CountdownRoundState {
+    CountdownRoundType type{CountdownRoundType::None};
+    int32_t numbersTarget{0};
+    int32_t numbersTiles[kCountdownMaxTiles]{0};
+    uint8_t numbersTileCount{0};
+    char letters[kCountdownMaxLetters]{0};
+    uint8_t letterCount{0};
+    char conundrumScramble[kCountdownMaxLetters + 1]{0};
+    char conundrumHint[48]{0};
+    bool conundrumSolved{false};
+    uint8_t reserved[5]{0};
+};
+
+struct CountdownStatePacket {
+    PacketHeader header;
+    CountdownMatchState matchState;
+    CountdownRoundState roundState;
+};
+
+struct CountdownAckPacket {
+    PacketHeader header;
+    uint32_t targetBoardId;
+    uint32_t gameId;
+    uint32_t revision;
+    uint32_t stateDigest;
+    MessageType acknowledgedType;
+    uint8_t reserved[3];
+};
+
+struct CountdownStateRequestPacket {
     PacketHeader header;
     uint32_t gameId;
     uint32_t revision;
