@@ -60,6 +60,11 @@ struct PuzzleLayout {
     int16_t tileHeight;
 };
 
+constexpr uint16_t kMastermindColors[kMastermindColorCount + 1] = {
+    TFT_DARKGREY, TFT_RED, TFT_ORANGE, TFT_YELLOW,
+    TFT_GREEN, TFT_CYAN, TFT_MAGENTA,
+};
+
 TFT_eSPI display;
 SPIClass touchSpi(VSPI);
 XPT2046_Touchscreen touch(kTouchCsPin, kTouchIrqPin);
