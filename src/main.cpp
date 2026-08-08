@@ -44,16 +44,6 @@ constexpr KnownBoard kKnownBoards[] = {
     {0x6AF4E9D4, {0xD4, 0xE9, 0xF4, 0x6A, 0xF4, 0xFC}},
     {0xE7D8CBB0, {0xB0, 0xCB, 0xD8, 0xE7, 0x1E, 0xD4}},
 };
-constexpr int16_t kBoardX = 11;
-constexpr int16_t kBoardY = 43;
-constexpr int16_t kTileWidth = 70;
-constexpr int16_t kTileHeight = 50;
-constexpr int16_t kTileGap = 6;
-constexpr uint16_t kMastermindColors[kMastermindColorCount + 1] = {
-    TFT_DARKGREY, TFT_RED, TFT_ORANGE, TFT_YELLOW,
-    TFT_GREEN, TFT_CYAN, TFT_MAGENTA,
-};
-
 constexpr int16_t kBoardAreaTop = 43;
 constexpr int16_t kBoardAreaWidth = 304;
 constexpr int16_t kBoardAreaHeight = 162;
@@ -70,10 +60,6 @@ struct PuzzleLayout {
     int16_t tileHeight;
 };
 
-constexpr uint16_t kMastermindColors[kMastermindColorCount + 1] = {
-    TFT_DARKGREY, TFT_RED, TFT_ORANGE, TFT_YELLOW,
-    TFT_GREEN, TFT_CYAN, TFT_MAGENTA,
-};
 TFT_eSPI display;
 SPIClass touchSpi(VSPI);
 XPT2046_Touchscreen touch(kTouchCsPin, kTouchIrqPin);
@@ -602,133 +588,6 @@ void renderComplete(bool online, const PuzzleState& game) {
                            : "All Greek symbols are home",
                        display.width() / 2, 138, 2);
     renderExitButton(online);
-}
-
-void drawMastermindCode(const MastermindCode& code, int16_t startX,
-                        int16_t y, int16_t spacing, int16_t radius,
-                        bool hidden = false) {
-    for (uint8_t index = 0; index < kMastermindCodeLength; ++index) {
-        const int16_t x = startX + index * spacing;
-        const uint16_t color = hidden
-                                   ? TFT_DARKGREY
-                                   : kMastermindColors[code.colors[index]];
-        display.fillCircle(x, y, radius, color);
-        display.drawCircle(x, y, radius, TFT_WHITE);
-    }
-}
-
-void renderMastermindHeader(const MastermindState& state, bool online) {
-    display.fillRect(0, 0, 320, 32, TFT_NAVY);
-    display.setTextDatum(ML_DATUM);
-    display.setTextColor(TFT_WHITE, TFT_NAVY);
-    char roundText[16];
-    snprintf(roundText, sizeof(roundText), "ROUND %u", state.round);
-    display.drawString(roundText, 7, 15, 2);
-    display.setTextDatum(MC_DATUM);
-    char scoreText[30];
-    snprintf(scoreText, sizeof(scoreText), "HOST %u - %u GUEST",
-             state.hostScore, state.guestScore);
-    display.drawString(scoreText, 179, 15, 2);
-    display.fillRoundRect(271, 3, 46, 26, 5,
-                          online ? TFT_RED : TFT_ORANGE);
-    display.drawRoundRect(271, 3, 46, 26, 5, TFT_WHITE);
-    display.setTextColor(TFT_WHITE,
-                         online ? TFT_RED : TFT_ORANGE);
-    display.drawString("EXIT", 294, 16, 2);
-}
-
-void renderMastermindHistory(const MastermindState& state) {
-    const uint8_t first = state.guessCount > 7 ? state.guessCount - 7 : 0;
-    display.setTextDatum(ML_DATUM);
-    for (uint8_t index = first; index < state.guessCount; ++index) {
-        const int16_t y = 47 + (index - first) * 24;
-        char number[5];
-        snprintf(number, sizeof(number), "%u", index + 1);
-        display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-        display.drawString(number, 4, y, 2);
-        drawMastermindCode(state.guesses[index].code, 30, y, 24, 8);
-        char feedback[16];
-        snprintf(feedback, sizeof(feedback), "E%u C%u",
-                 state.guesses[index].feedback.exact,
-                 state.guesses[index].feedback.colorOnly);
-        display.drawString(feedback, 124, y, 2);
-    }
-}
-
-void renderMastermind(bool online, const MastermindState& state,
-                      bool deliveryPending) {
-    display.fillScreen(TFT_BLACK);
-    renderMastermindHeader(state, online);
-    display.setTextDatum(MC_DATUM);
-    if (state.phase == MastermindPhase::SecretEntry) {
-        const bool localMaker = state.codemakerBoardId == boardId;
-        display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        display.drawString(localMaker ? "SET YOUR SECRET CODE"
-                                      : "OPPONENT IS SETTING A SECRET",
-                           160, 48, 2);
-        if (!localMaker) {
-            MastermindCode hidden{};
-            drawMastermindCode(hidden, 70, 110, 60, 18, true);
-            display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-            display.drawString("Your guessing turn is next", 160, 166, 2);
-            return;
-        }
-        drawMastermindCode(draftCode, 70, 88, 60, 18);
-        display.drawCircle(70 + selectedPeg * 60, 88, 22, TFT_WHITE);
-        for (uint8_t color = 1; color <= kMastermindColorCount; ++color) {
-            const int16_t x = 45 + (color - 1) * 46;
-            display.fillCircle(x, 143, 15, kMastermindColors[color]);
-            display.drawCircle(x, 143, 15, TFT_WHITE);
-        }
-        display.fillRoundRect(95, 181, 130, 42, 7,
-                              deliveryPending ? TFT_DARKGREY : TFT_GREEN);
-        display.drawRoundRect(95, 181, 130, 42, 7, TFT_WHITE);
-        display.setTextColor(TFT_BLACK,
-                             deliveryPending ? TFT_DARKGREY : TFT_GREEN);
-        display.drawString("CONFIRM", 160, 202, 4);
-        return;
-    }
-
-    if (state.phase == MastermindPhase::RoundComplete) {
-        const bool localWon = state.roundWinnerBoardId == boardId;
-        display.setTextColor(localWon ? TFT_GREEN : TFT_ORANGE, TFT_BLACK);
-        display.drawString(localWon ? "YOU WIN THE ROUND" : "OPPONENT WINS",
-                           160, 62, 4);
-        display.setTextColor(TFT_WHITE, TFT_BLACK);
-        display.drawString("SECRET CODE", 160, 108, 2);
-        drawMastermindCode(state.secret, 70, 143, 60, 17);
-        display.setTextColor(TFT_CYAN, TFT_BLACK);
-        display.drawString("ROLES SWAP NEXT ROUND", 160, 195, 2);
-        return;
-    }
-
-    renderMastermindHistory(state);
-    const bool localMaker = state.codemakerBoardId == boardId;
-    display.drawFastVLine(194, 35, 202, TFT_DARKGREY);
-    if (localMaker) {
-        display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        display.drawString("YOUR SECRET", 257, 51, 2);
-        drawMastermindCode(state.secret, 215, 86, 28, 10);
-        display.setTextColor(TFT_CYAN, TFT_BLACK);
-        display.drawString("OPPONENT", 257, 133, 2);
-        display.drawString("IS GUESSING", 257, 153, 2);
-        return;
-    }
-    display.setTextColor(TFT_YELLOW, TFT_BLACK);
-    display.drawString("YOUR GUESS", 257, 45, 2);
-    for (uint8_t color = 1; color <= kMastermindColorCount; ++color) {
-        const int16_t x = 220 + ((color - 1) % 3) * 38;
-        const int16_t y = 78 + ((color - 1) / 3) * 38;
-        display.fillCircle(x, y, 13, kMastermindColors[color]);
-        display.drawCircle(x, y, 13, TFT_WHITE);
-    }
-    drawMastermindCode(draftCode, 215, 157, 28, 10);
-    display.drawCircle(215 + selectedPeg * 28, 157, 14, TFT_WHITE);
-    display.fillRoundRect(211, 185, 92, 39, 6,
-                          deliveryPending ? TFT_DARKGREY : TFT_GREEN);
-    display.setTextColor(TFT_BLACK,
-                         deliveryPending ? TFT_DARKGREY : TFT_GREEN);
-    display.drawString("GUESS", 257, 204, 4);
 }
 
 void drawMastermindCode(const MastermindCode& code, int16_t startX,
