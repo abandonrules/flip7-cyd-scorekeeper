@@ -27,7 +27,73 @@ it to return the synchronized pair to the game-selection screen.
 - Save/restore games
 - Future web dashboard
 
-## ESP-NOW peer keys
+## Build & Upload to CYD Boards
+
+This project uses **PlatformIO** to build and flash firmware to the ESP32-2432S028 (Cheap Yellow Display) boards.
+
+### Prerequisites
+```sh
+# Install PlatformIO (if not already installed)
+pip install platformio
+# or: pio install --global platformio
+```
+
+### One-Time ESP-NOW Key Provisioning
+Generate a PMK/LMK pair **once** and use the same keys for both boards:
+
+```sh
+mkdir -p ~/.config/flip7-cyd-scorekeeper
+chmod 700 ~/.config/flip7-cyd-scorekeeper
+python3 - <<'PY'
+from pathlib import Path
+import os, secrets
+path = Path.home() / ".config/flip7-cyd-scorekeeper/espnow.env"
+path.write_text(
+    f"export FLIP7_ESPNOW_PMK={secrets.token_hex(16)}\n"
+    f"export FLIP7_ESPNOW_LMK={secrets.token_hex(16)}\n"
+)
+os.chmod(path, 0o600)
+PY
+```
+
+### Build & Upload Workflow
+```sh
+cd /home/cmayfield/code/games/flip7-cyd-scorekeeper
+
+# Load keys into environment (do this each new shell)
+source ~/.config/flip7-cyd-scorekeeper/espnow.env
+
+# Build firmware
+pio run
+
+# Upload to connected CYD board (plug in via USB)
+pio run --target upload
+
+# Monitor serial output for debugging (use this, not raw cat)
+pio device monitor
+```
+
+### Key Details
+
+| Item | Value |
+|------|-------|
+| **Platform** | `espressif32` (ESP32) |
+| **Board** | `esp32dev` (Cheap Yellow Display / ESP32-2432S028) |
+| **Framework** | Arduino |
+| **Monitor speed** | 115200 baud |
+| **Pre-build script** | `scripts/configure_peer_keys.py` (generates `generated_peer_keys.h` from env vars) |
+| **Libraries** | TFT_eSPI, XPT2046_Touchscreen |
+| **Source filter** | Includes `../core/src/*.cpp` for the countdown engine |
+
+### Important Notes
+1. **Both boards need the same PMK/LMK** — generate once, `source` the env file before each build
+2. **Keys are NOT committed** — stored in `~/.config/flip7-cyd-scorekeeper/espnow.env` (chmod 600)
+3. **CI uses ephemeral keys** — CI firmware isn't installed on the physical pair
+4. **Serial debugging** — use `pio device monitor` (not raw `cat`) to see proper output with DTR/RTS handled
+
+---
+
+## ESP-NOW Peer Keys (Legacy Reference)
 
 The paired boards use encrypted unicast ESP-NOW. Provision one PMK/LMK pair outside the repository and use the same pair for both firmware uploads:
 
