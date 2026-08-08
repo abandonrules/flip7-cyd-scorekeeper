@@ -3,9 +3,66 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstring>
+#include <set>
+#include <string_view>
+
+#include "flip7/conundrum_table.hpp"
 #include "flip7/countdown_engine.hpp"
 
 using namespace flip7::countdown;
+
+namespace {
+
+std::array<int, 26> letterHistogram(std::string_view word) {
+    std::array<int, 26> counts{};
+    for (char c : word) {
+        EXPECT_GE(c, 'A');
+        EXPECT_LE(c, 'Z');
+        ++counts[c - 'A'];
+    }
+    return counts;
+}
+
+} // namespace
+
+TEST(ConundrumTable, AllEntriesAreValid) {
+    std::set<std::string> uniqueSolutions;
+
+    for (std::size_t i = 0; i < kConundrumTableSize; ++i) {
+        const auto& entry = kConundrumTable[i];
+        SCOPED_TRACE(::testing::Message() << "Conundrum entry " << i);
+
+        ASSERT_NE(entry.solution, nullptr);
+        ASSERT_NE(entry.scramble, nullptr);
+        ASSERT_NE(entry.hint, nullptr);
+        SCOPED_TRACE(entry.solution);
+
+        ASSERT_EQ(std::strlen(entry.solution), 9u)
+            << "Solution must be exactly 9 letters.";
+        ASSERT_FALSE(std::string_view(entry.solution).empty());
+
+        for (char c : std::string_view(entry.solution)) {
+            EXPECT_TRUE(std::isupper(static_cast<unsigned char>(c)))
+                << "Solution contains lowercase characters.";
+        }
+
+        ASSERT_EQ(std::strlen(entry.scramble), 9u)
+            << "Scramble must be exactly 9 letters.";
+        EXPECT_NE(std::string(entry.solution), std::string(entry.scramble))
+            << "Scramble is identical to solution.";
+        EXPECT_EQ(letterHistogram(entry.solution), letterHistogram(entry.scramble))
+            << "Scramble is not an exact anagram.";
+
+        EXPECT_FALSE(std::string_view(entry.hint).empty())
+            << "Hint may not be empty.";
+        EXPECT_TRUE(uniqueSolutions.insert(entry.solution).second)
+            << "Duplicate solution found.";
+    }
+}
 
 // ---------------------------------------------------------------------------
 // makeRoundRandom — determinism
@@ -76,7 +133,7 @@ TEST(CountdownTest, NumbersRoundArithmeticStep) {
 
     // 75 + 25 would fail — 25 is consumed
     auto r2 = round.applyStep(0x01, ArithmeticOp::Add, 75, 25);
-    EXPECT_FALSE(r2.accepted);  // 25 no longer available
+    EXPECT_FALSE(r2.accepted); // 25 no longer available
 
     // 75 + 4 = 79
     auto r3 = round.applyStep(0x01, ArithmeticOp::Add, 75, 4);
@@ -96,7 +153,8 @@ TEST(CountdownTest, NumbersRoundDivisionValidation) {
     EXPECT_TRUE(r1.accepted);
 
     // Non-integer division rejected: 25 / 4
-    round.submitClaim(0x02, 0);
+    auto claim2 = round.submitClaim(0x02, 100);
+    EXPECT_TRUE(claim2.accepted);
     auto r2 = round.applyStep(0x02, ArithmeticOp::Divide, 25, 4);
     EXPECT_FALSE(r2.accepted);
     EXPECT_EQ(r2.errorCode, "INVALID_DIVISION");
@@ -154,7 +212,7 @@ TEST(CountdownTest, LettersRoundValidSubset) {
 TEST(CountdownTest, LettersRoundClaimsAndPresentation) {
     LettersRound round;
     // Manually set letters for determinism
-    for (char c : std::string("AEIORCNTS")) {
+    for (char c: std::string("AEIORCNTS")) {
         // Use applyCommand to add each letter
         CommandContext ctx{0x10, 0};
         std::vector<uint8_t> payload = {static_cast<uint8_t>(c)};
@@ -182,7 +240,7 @@ TEST(CountdownTest, ConundrumRoundSimultaneousAttempts) {
     ConundrumRound round("BLUEPRINT", "TNPULEBRI", "A detailed plan or design");
 
     EXPECT_EQ(round.solution(), "BLUEPRINT");
-    EXPECT_EQ(round.hint(),     "A detailed plan or design");
+    EXPECT_EQ(round.hint(), "A detailed plan or design");
     EXPECT_FALSE(round.isSolved());
 
     // Player 1 incorrect — no lockout
@@ -237,14 +295,14 @@ TEST(CountdownTest, MatchEngineStartNextRoundCreatesRound) {
 }
 
 TEST(CountdownTest, MatchEngineLeaderHostMigrationAndChooserUpdate) {
-    uint32_t hostId   = 0xA1;
-    uint32_t guestId  = 0xB2;
-    uint32_t gameId   = 999;
+    uint32_t hostId = 0xA1;
+    uint32_t guestId = 0xB2;
+    uint32_t gameId = 999;
 
     CountdownMatchEngine engine(hostId, guestId, gameId);
-    EXPECT_EQ(engine.hostBoardId(),   hostId);
-    EXPECT_EQ(engine.guestBoardId(),  guestId);
-    EXPECT_EQ(engine.chooserBoardId(), hostId);  // host chooses first
+    EXPECT_EQ(engine.hostBoardId(), hostId);
+    EXPECT_EQ(engine.guestBoardId(), guestId);
+    EXPECT_EQ(engine.chooserBoardId(), hostId); // host chooses first
     EXPECT_EQ(engine.hostTerm(), 1u);
 
     auto random = makeRoundRandom(gameId, 1u);
@@ -252,16 +310,16 @@ TEST(CountdownTest, MatchEngineLeaderHostMigrationAndChooserUpdate) {
 
     // Guest wins the round — becomes chooser AND takes score lead → becomes host
     RoundResult rr;
-    rr.roundType     = RoundType::Numbers;
+    rr.roundType = RoundType::Numbers;
     rr.winnerBoardId = guestId;
     rr.scoreAwards[guestId] = 10;
 
     engine.recordRoundResult(rr);
 
     // ADR-005: guest took score lead → guest becomes new host
-    EXPECT_EQ(engine.hostBoardId(),  guestId);
+    EXPECT_EQ(engine.hostBoardId(), guestId);
     EXPECT_EQ(engine.guestBoardId(), hostId);
-    EXPECT_EQ(engine.hostTerm(), 2u);  // incremented on transfer
+    EXPECT_EQ(engine.hostTerm(), 2u); // incremented on transfer
 
     // chooser = round winner = guestId
     EXPECT_EQ(engine.chooserBoardId(), guestId);
@@ -275,7 +333,7 @@ TEST(CountdownTest, MatchEngineChooserRetainedOnTie) {
     // Tie round — no winner
     RoundResult rr;
     rr.roundType = RoundType::Letters;
-    rr.isTie     = true;
+    rr.isTie = true;
     rr.scoreAwards[0xA1] = 5;
     rr.scoreAwards[0xB2] = 5;
 
@@ -284,7 +342,7 @@ TEST(CountdownTest, MatchEngineChooserRetainedOnTie) {
 
     // Tie: previous chooser retained; no host migration (scores equal)
     EXPECT_EQ(engine.chooserBoardId(), prevChooser);
-    EXPECT_EQ(engine.hostTerm(), 1u);  // no transfer
+    EXPECT_EQ(engine.hostTerm(), 1u); // no transfer
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +355,7 @@ TEST(CountdownTest, IRoundNumbersApplyCommandClaim) {
 
     CommandContext ctx{0x01, 0};
     // Encode claimed value 350 as little-endian uint32
-    std::vector<uint8_t> payload = {0x5E, 0x01, 0x00, 0x00};  // 0x15E = 350
+    std::vector<uint8_t> payload = {0x5E, 0x01, 0x00, 0x00}; // 0x15E = 350
     auto result = round.applyCommand(ctx, CommandType::NumSubmitClaim, payload);
     EXPECT_TRUE(result.accepted);
     EXPECT_EQ(round.claimFor(0x01), 350);
@@ -306,7 +364,7 @@ TEST(CountdownTest, IRoundNumbersApplyCommandClaim) {
 TEST(CountdownTest, IRoundConundrumApplyCommand) {
     ConundrumRound round("STARTLING", "GTLNRSAIT", "Surprising");
     CommandContext ctx{0x10, 0};
-    std::vector<uint8_t> attempt{'S','T','A','R','T','L','I','N','G'};
+    std::vector<uint8_t> attempt{'S', 'T', 'A', 'R', 'T', 'L', 'I', 'N', 'G'};
     auto result = round.applyCommand(ctx, CommandType::ConSubmitAttempt, attempt);
     EXPECT_TRUE(result.accepted);
     EXPECT_TRUE(round.isSolved());
@@ -317,17 +375,16 @@ TEST(CountdownTest, IRoundConundrumApplyCommand) {
 // ---------------------------------------------------------------------------
 
 TEST(CountdownTest, FixedVectorCapacity) {
-    FixedVector<int, 3> v;
+    FixedVector < int, 3 > v;
     EXPECT_TRUE(v.empty());
     EXPECT_TRUE(v.push_back(1));
     EXPECT_TRUE(v.push_back(2));
     EXPECT_TRUE(v.push_back(3));
     EXPECT_TRUE(v.full());
-    EXPECT_FALSE(v.push_back(4));  // over capacity
+    EXPECT_FALSE(v.push_back(4)); // over capacity
     EXPECT_EQ(v.size(), 3u);
     EXPECT_EQ(v[0], 1);
     EXPECT_TRUE(v.pop_back());
     EXPECT_EQ(v.size(), 2u);
     EXPECT_FALSE(v.full());
 }
-

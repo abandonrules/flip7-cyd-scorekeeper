@@ -3,12 +3,17 @@
  */
 
 #include "flip7/countdown_engine.hpp"
+#include "flip7/conundrum_table.hpp"
+#include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <iterator>
+#include <limits>
 #include <numeric>
+#include <utility>
 
-namespace flip7 {
-namespace countdown {
+
+namespace flip7::countdown {
 
 // --------------------------------------------------
 // NumbersRound
@@ -18,30 +23,32 @@ NumbersRound::NumbersRound(uint32_t target, const std::vector<int32_t>& tiles)
     : target_(target), tiles_(tiles) {}
 
 NumbersRound NumbersRound::createRandom(IRandomSource& random, uint8_t largeCount) {
-    uint32_t target = random.nextRange(101, 999);
+    const uint32_t target = random.nextRange(101, 999);
 
     std::vector<int32_t> largePool = {25, 50, 75, 100};
     std::vector<int32_t> smallPool = {1, 1, 2, 2, 3, 3, 4, 4, 5, 5,
                                        6, 6, 7, 7, 8, 8, 9, 9, 10, 10};
 
-    uint8_t largeToPick = std::min<uint8_t>(largeCount, 4);
-    uint8_t smallToPick = static_cast<uint8_t>(6 - largeToPick);
+    const uint8_t largeToPick = std::min<uint8_t>(largeCount, 4);
+    const auto smallToPick = static_cast<uint8_t>(6 - largeToPick);
 
     std::vector<int32_t> selectedTiles;
 
     for (uint8_t i = 0; i < largeToPick && !largePool.empty(); ++i) {
-        size_t idx = random.nextRange(0, static_cast<uint32_t>(largePool.size() - 1));
+        const size_t idx =
+            random.nextRange(0, static_cast<uint32_t>(largePool.size() - 1));
         selectedTiles.push_back(largePool[idx]);
         largePool.erase(largePool.begin() + static_cast<ptrdiff_t>(idx));
     }
 
     for (uint8_t i = 0; i < smallToPick && !smallPool.empty(); ++i) {
-        size_t idx = random.nextRange(0, static_cast<uint32_t>(smallPool.size() - 1));
+        const size_t idx =
+            random.nextRange(0, static_cast<uint32_t>(smallPool.size() - 1));
         selectedTiles.push_back(smallPool[idx]);
         smallPool.erase(smallPool.begin() + static_cast<ptrdiff_t>(idx));
     }
 
-    return NumbersRound(target, selectedTiles);
+    return {target, selectedTiles};
 }
 
 int32_t NumbersRound::calculateScore(uint32_t target, uint32_t achieved) {
@@ -52,10 +59,68 @@ int32_t NumbersRound::calculateScore(uint32_t target, uint32_t achieved) {
     return 0;
 }
 
+bool NumbersRound::isValueReachable(int32_t target,
+                                    const std::vector<int32_t>& tiles) {
+    if (tiles.empty()) return false;
+    if (tiles.size() == 1) return tiles[0] == target;
+
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        for (size_t j = i + 1; j < tiles.size(); ++j) {
+            int32_t a = tiles[i];
+            int32_t b = tiles[j];
+            std::vector<int32_t> remaining;
+            for (size_t k = 0; k < tiles.size(); ++k) {
+                if (k != i && k != j) remaining.push_back(tiles[k]);
+            }
+
+            // a + b
+            remaining.push_back(a + b);
+            if (isValueReachable(target, remaining)) return true;
+            remaining.pop_back();
+
+            // a - b (positive only)
+            if (a > b) {
+                remaining.push_back(a - b);
+                if (isValueReachable(target, remaining)) return true;
+                remaining.pop_back();
+            }
+            // b - a (positive only)
+            if (b > a) {
+                remaining.push_back(b - a);
+                if (isValueReachable(target, remaining)) return true;
+                remaining.pop_back();
+            }
+
+            // a * b
+            remaining.push_back(a * b);
+            if (isValueReachable(target, remaining)) return true;
+            remaining.pop_back();
+
+            // a / b (exact division only)
+            if (b != 0 && a % b == 0) {
+                remaining.push_back(a / b);
+                if (isValueReachable(target, remaining)) return true;
+                remaining.pop_back();
+            }
+            // b / a (exact division only)
+            if (a != 0 && b % a == 0) {
+                remaining.push_back(b / a);
+                if (isValueReachable(target, remaining)) return true;
+                remaining.pop_back();
+            }
+        }
+    }
+    return false;
+}
+
 CommandResult NumbersRound::submitClaim(uint32_t boardId, int32_t claimedValue) {
     auto& ps = playerStates_[boardId];
     if (ps.claimSubmitted) {
         return CommandResult{false, "ALREADY_CLAIMED", "Claim already submitted"};
+    }
+    if (!isValueReachable(claimedValue, tiles_)) {
+        return CommandResult{false, "CLAIM_UNREACHABLE",
+                             "Claimed value is not achievable from the drawn tiles"};
     }
     ps.claimedValue    = claimedValue;
     ps.claimSubmitted  = true;
@@ -64,11 +129,11 @@ CommandResult NumbersRound::submitClaim(uint32_t boardId, int32_t claimedValue) 
 }
 
 bool NumbersRound::bothClaimsSubmitted() const {
-    if (playerStates_.size() < 2) return false;
-    for (const auto& kv : playerStates_) {
-        if (!kv.second.claimSubmitted) return false;
-    }
-    return true;
+    return playerStates_.size() >= 2 &&
+           std::all_of(playerStates_.begin(), playerStates_.end(),
+                       [](const auto& entry) {
+                           return entry.second.claimSubmitted;
+                       });
 }
 
 int32_t NumbersRound::claimFor(uint32_t boardId) const {
@@ -90,14 +155,14 @@ CommandResult NumbersRound::applyStep(uint32_t boardId, ArithmeticOp op,
     if (ws.currentValue.has_value() && ws.currentValue.value() == operandA) {
         aFound = true;
     } else {
-        for (size_t i = 0; i < ws.availableValues.size(); ++i) {
-            if (ws.availableValues[i] == operandA) { aFound = true; break; }
+        for (const int32_t availableValue : ws.availableValues) {
+            if (availableValue == operandA) { aFound = true; break; }
         }
     }
     // Validate operand B is available (distinct from A)
     bool bFound = false;
-    for (size_t i = 0; i < ws.availableValues.size(); ++i) {
-        if (ws.availableValues[i] == operandB) { bFound = true; break; }
+    for (const int32_t availableValue : ws.availableValues) {
+        if (availableValue == operandB) { bFound = true; break; }
     }
     if (!aFound || !bFound) {
         return CommandResult{false, "OPERAND_UNAVAILABLE",
@@ -184,7 +249,7 @@ CommandResult NumbersRound::undoStep(uint32_t boardId) {
     return CommandResult{true, "", ""};
 }
 
-CommandResult NumbersRound::completePresentaton(uint32_t boardId) {
+CommandResult NumbersRound::completePresentation(uint32_t boardId) {
     auto it = playerStates_.find(boardId);
     if (it == playerStates_.end()) {
         return CommandResult{false, "UNKNOWN_PLAYER", "Unknown player"};
@@ -228,29 +293,34 @@ CommandResult NumbersRound::applyCommand(const CommandContext& ctx,
     switch (type) {
         case CommandType::NumSubmitClaim: {
             if (payload.size() < 4) return {false, "BAD_PAYLOAD", ""};
-            int32_t v = static_cast<int32_t>(
-                (uint32_t(payload[0])) | (uint32_t(payload[1]) << 8) |
-                (uint32_t(payload[2]) << 16) | (uint32_t(payload[3]) << 24));
+            auto v = static_cast<int32_t>(
+                (static_cast<uint32_t>(payload[0])) |
+                (static_cast<uint32_t>(payload[1]) << 8) |
+                (static_cast<uint32_t>(payload[2]) << 16) |
+                (static_cast<uint32_t>(payload[3]) << 24));
             return submitClaim(ctx.senderBoardId, v);
         }
         case CommandType::NumPresentStepRequest: {
             if (payload.size() < 9) return {false, "BAD_PAYLOAD", ""};
             auto op = static_cast<ArithmeticOp>(payload[0]);
-            int32_t a = static_cast<int32_t>(
-                (uint32_t(payload[1])) | (uint32_t(payload[2]) << 8) |
-                (uint32_t(payload[3]) << 16) | (uint32_t(payload[4]) << 24));
-            int32_t b = static_cast<int32_t>(
-                (uint32_t(payload[5])) | (uint32_t(payload[6]) << 8) |
-                (uint32_t(payload[7]) << 16) | (uint32_t(payload[8]) << 24));
+            auto a = static_cast<int32_t>(
+                (static_cast<uint32_t>(payload[1])) |
+                (static_cast<uint32_t>(payload[2]) << 8) |
+                (static_cast<uint32_t>(payload[3]) << 16) |
+                (static_cast<uint32_t>(payload[4]) << 24));
+            auto b = static_cast<int32_t>(
+                (static_cast<uint32_t>(payload[5])) |
+                (static_cast<uint32_t>(payload[6]) << 8) |
+                (static_cast<uint32_t>(payload[7]) << 16) |
+                (static_cast<uint32_t>(payload[8]) << 24));
             bool bank = (payload.size() > 9 && payload[9] != 0);
             return applyStep(ctx.senderBoardId, op, a, b, bank);
         }
-        case CommandType::NumPresentBankResult:
-            return undoStep(ctx.senderBoardId);  // BankResult reuses undo path
         case CommandType::NumPresentUndo:
+        case CommandType::NumPresentBankResult:
             return undoStep(ctx.senderBoardId);
         case CommandType::NumPresentComplete:
-            return completePresentaton(ctx.senderBoardId);
+            return completePresentation(ctx.senderBoardId);
         default:
             return {false, "WRONG_ROUND", "Command not valid for Numbers round"};
     }
@@ -310,6 +380,23 @@ bool LettersRound::canDrawVowel() const {
     return true;
 }
 
+bool LettersRound::syncDrawnLetters(const std::string& letters) {
+    if (letters.size() > 9) return false;
+    size_t vowels = 0;
+    for (char letter : letters) {
+        const char upper = static_cast<char>(std::toupper(static_cast<unsigned char>(letter)));
+        if (upper < 'A' || upper > 'Z') return false;
+        if (upper == 'A' || upper == 'E' || upper == 'I' ||
+            upper == 'O' || upper == 'U') {
+            ++vowels;
+        }
+    }
+    drawnLetters_ = letters;
+    vowelCount_ = vowels;
+    consonantCount_ = letters.size() - vowels;
+    return true;
+}
+
 bool LettersRound::canDrawConsonant() const {
     size_t remaining = 9 - drawnLetters_.size();
     if (remaining == 0) return false;
@@ -322,8 +409,8 @@ bool LettersRound::canDrawConsonant() const {
 
 bool LettersRound::drawVowel(IRandomSource& random) {
     if (!canDrawVowel()) return false;
-    const char vowels[] = {'A', 'E', 'I', 'O', 'U'};
-    char v = vowels[random.nextRange(0, 4)];
+    constexpr char vowels[] = {'A', 'E', 'I', 'O', 'U'};
+    const char v = vowels[random.nextRange(0, 4)];
     drawnLetters_ += v;
     ++vowelCount_;
     return true;
@@ -331,11 +418,11 @@ bool LettersRound::drawVowel(IRandomSource& random) {
 
 bool LettersRound::drawConsonant(IRandomSource& random) {
     if (!canDrawConsonant()) return false;
-    const char consonants[] = {
+    constexpr char consonants[] = {
         'B', 'C', 'D', 'F', 'G', 'H', 'J', 'K', 'L', 'M',
         'N', 'P', 'Q', 'R', 'S', 'T', 'V', 'W', 'X', 'Y', 'Z'
     };
-    char c = consonants[random.nextRange(0, 20)];
+    const char c = consonants[random.nextRange(0, 20)];
     drawnLetters_ += c;
     ++consonantCount_;
     return true;
@@ -425,6 +512,11 @@ const std::string& LettersRound::presentedWordFor(uint32_t boardId) const {
     static const std::string empty;
     auto it = presentedWords_.find(boardId);
     return (it != presentedWords_.end()) ? it->second : empty;
+}
+
+bool LettersRound::verificationFor(uint32_t boardId) const {
+    auto it = verifications_.find(boardId);
+    return it != verifications_.end() && it->second;
 }
 
 LettersRoundProjection LettersRound::projection() const {
@@ -524,39 +616,85 @@ RoundResult LettersRound::evaluate(const std::vector<uint32_t>& playerBoardIds) 
 // TODO: replace with content/conundrum/default_words.csv -> generated header
 // --------------------------------------------------
 
-namespace {
-struct ConundrumEntry { const char* solution; const char* scramble; const char* hint; };
-static const ConundrumEntry kConundrumTable[] = {
-    {"BLUEPRINT", "TNPULEBRI", "A detailed plan or design"},
-    {"COUNTDOWN", "DTWNOCNUO", "A backward sequence before an event"},
-    {"STARTLING", "GTLNRSAIT", "Surprising or astonishing"},
-    {"CARPETING", "TICNGPEAR", "Floor covering material"},
-    {"GRENADIER", "AIGNRDERE", "A type of soldier"},
-    {"PETROLEUM", "MOUERTPLE", "Crude oil and its derivatives"},
-    {"RECTANGLE", "CTRELAGNE", "A four-sided flat shape"},
-    {"IMPORTANT", "TNAMIPORT", "Of great significance"},
-    {"TRAMPOLIN", "MILNPAOTR", "Bouncing apparatus"},
-    {"SPECTATOR", "POSTCATER", "Someone watching an event"},
+const ConundrumEntry kConundrumTable[] = {
+    {.solution = "ADVENTURE", .scramble = "VENTUREAD", .hint = "An exciting or unusual experience"},
+    {.solution = "BEAUTIFUL", .scramble = "TIFULBEAU", .hint = "Pleasant to look at"},
+    {.solution = "BEGINNING", .scramble = "NINGBEGIN", .hint = "The start of something"},
+    {.solution = "BLUEBERRY", .scramble = "BERRYBLUE", .hint = "A small blue edible fruit"},
+    {.solution = "BLUEPRINT", .scramble = "TNPULEBRI", .hint = "A detailed plan or design"},
+    {.solution = "BREAKFAST", .scramble = "FASTBREAK", .hint = "The first meal of the day"},
+    {.solution = "CARPETING", .scramble = "TICNGPEAR", .hint = "Floor covering material"},
+    {.solution = "CELEBRATE", .scramble = "BRATECELE", .hint = "To honor a special occasion"},
+    {.solution = "CHAMPIONS", .scramble = "PIONSCHAM", .hint = "Winners of a competition"},
+    {.solution = "CHOCOLATE", .scramble = "LATECHOCO", .hint = "Sweet treat made from cacao"},
+    {.solution = "COMPUTERS", .scramble = "PUTERCOMS", .hint = "Electronic information machines"},
+    {.solution = "COUNTDOWN", .scramble = "DTWNOCNUO", .hint = "A backward sequence before an event"},
+    {.solution = "CREATURES", .scramble = "TURESCREA", .hint = "Living beings or animals"},
+    {.solution = "CROSSWORD", .scramble = "WORDCROSS", .hint = "A word puzzle with intersecting answers"},
+    {.solution = "DANGEROUS", .scramble = "GEROUSDAN", .hint = "Likely to cause harm"},
+    {.solution = "DISCOVERY", .scramble = "COVERYDIS", .hint = "The finding of something new"},
+    {.solution = "EDUCATION", .scramble = "CATIONEDU", .hint = "The process of learning"},
+    {.solution = "ELEPHANTS", .scramble = "PHANTSELE", .hint = "Large animals with trunks"},
+    {.solution = "EVERGREEN", .scramble = "GREENEVER", .hint = "A plant that stays green year-round"},
+    {.solution = "FESTIVALS", .scramble = "TIVALSFES", .hint = "Large celebrations or events"},
+    {.solution = "FIREPLACE", .scramble = "PLACEFIRE", .hint = "A hearth for a fire"},
+    {.solution = "GARDENING", .scramble = "DENINGGAR", .hint = "The activity of growing plants"},
+    {.solution = "GRENADIER", .scramble = "AIGNRDERE", .hint = "A type of soldier"},
+    {.solution = "HAPPINESS", .scramble = "PINESSHAP", .hint = "A state of joy"},
+    {.solution = "HEADLIGHT", .scramble = "LIGHTHEAD", .hint = "A forward-facing vehicle lamp"},
+    {.solution = "IMPORTANT", .scramble = "TNAMIPORT", .hint = "Of great significance"},
+    {.solution = "JELLYFISH", .scramble = "LYFISHJEL", .hint = "A drifting sea animal"},
+    {.solution = "KEYBOARDS", .scramble = "BOARDKEYS", .hint = "Devices with keys for entering text"},
+    {.solution = "KNOWLEDGE", .scramble = "LEDGEKNOW", .hint = "Information and understanding"},
+    {.solution = "LANDSCAPE", .scramble = "SCAPELAND", .hint = "The visible features of an area"},
+    {.solution = "LIGHTNING", .scramble = "NINGLIGHT", .hint = "A flash of electricity in a storm"},
+    {.solution = "MAGNETISM", .scramble = "NETISMMAG", .hint = "A force that attracts iron"},
+    {.solution = "MOUNTAINS", .scramble = "TAINSMOUN", .hint = "Very high natural elevations"},
+    {.solution = "MUSICALLY", .scramble = "CALLYMUSI", .hint = "In a way related to music"},
+    {.solution = "NOTEBOOKS", .scramble = "BOOKSNOTE", .hint = "Books used for writing notes"},
+    {.solution = "ORCHESTRA", .scramble = "ESTRAORCH", .hint = "A large group of instrumentalists"},
+    {.solution = "PAINTINGS", .scramble = "TINGSPAIN", .hint = "Pictures made with paint"},
+    {.solution = "PAPERBACK", .scramble = "BACKPAPER", .hint = "A book with a flexible cover"},
+    {.solution = "PETROLEUM", .scramble = "MOUERTPLE", .hint = "Crude oil and its derivatives"},
+    {.solution = "PINEAPPLE", .scramble = "APPLEPINE", .hint = "A tropical fruit with spiky skin"},
+    {.solution = "POLITICAL", .scramble = "TICALPOLI", .hint = "Relating to government"},
+    {.solution = "RECTANGLE", .scramble = "CTRELAGNE", .hint = "A four-sided flat shape"},
+    {.solution = "SOMETHING", .scramble = "THINGSOME", .hint = "An unspecified object or matter"},
+    {.solution = "SPECTATOR", .scramble = "POSTCATER", .hint = "Someone watching an event"},
+    {.solution = "STARTLING", .scramble = "GTLNRSAIT", .hint = "Surprising or astonishing"},
+    {.solution = "SUNFLOWER", .scramble = "FLOWERSUN", .hint = "A tall plant with a yellow bloom"},
+    {.solution = "TELESCOPE", .scramble = "SCOPETELE", .hint = "An instrument for viewing distant objects"},
+    {.solution = "UNDERLINE", .scramble = "LINEUNDER", .hint = "A line drawn beneath text"},
+    {.solution = "WONDERFUL", .scramble = "DERFULWON", .hint = "Extremely good"},
+    {.solution = "WORKPLACE", .scramble = "PLACEWORK", .hint = "A location where people work"},
 };
-static constexpr size_t kConundrumTableSize =
-    sizeof(kConundrumTable) / sizeof(kConundrumTable[0]);
-} // namespace
+const std::size_t kConundrumTableSize =
+    std::size(kConundrumTable);
+static_assert(std::size(kConundrumTable) - 1 <=
+              std::numeric_limits<uint32_t>::max(),
+              "Conundrum table indices must fit IRandomSource::nextRange");
 
-ConundrumRound::ConundrumRound(const std::string& solution,
-                                const std::string& scramble,
-                                const std::string& hint)
-    : solution_(solution), scramble_(scramble), hint_(hint) {}
+ConundrumRound::ConundrumRound(std::string  solution,
+                                std::string  scramble,
+                                std::string  hint)
+    : solution_(std::move(solution)), scramble_(std::move(scramble)), hint_(std::move(hint)) {}
 
 ConundrumRound ConundrumRound::createRandom(IRandomSource& random) {
+    if (kConundrumTableSize == 0) {
+        return ConundrumRound{"", "", ""};
+    }
     size_t idx = random.nextRange(0, static_cast<uint32_t>(kConundrumTableSize - 1));
     const auto& entry = kConundrumTable[idx];
-    return ConundrumRound(entry.solution, entry.scramble, entry.hint);
+    return {entry.solution, entry.scramble, entry.hint};
 }
 
 CommandResult ConundrumRound::submitAttempt(uint32_t boardId,
                                              const std::string& attempt) {
     if (solved_) {
         return CommandResult{false, "ALREADY_SOLVED", "Conundrum already solved"};
+    }
+    if (expired_) {
+        return CommandResult{false, "DEADLINE_ELAPSED", "Buzz-window has expired"};
     }
     std::string clean   = attempt;
     std::string correct = solution_;
@@ -574,9 +712,11 @@ CommandResult ConundrumRound::submitAttempt(uint32_t boardId,
 
 ConundrumRoundProjection ConundrumRound::projection() const {
     ConundrumRoundProjection p{};
+    std::strncpy(p.solution, solution_.c_str(), sizeof(p.solution) - 1);
     std::strncpy(p.scramble, scramble_.c_str(), sizeof(p.scramble) - 1);
     std::strncpy(p.hint,     hint_.c_str(),     sizeof(p.hint) - 1);
     p.solved        = solved_;
+    p.expired       = expired_;
     p.winnerBoardId = winnerBoardId_;
     return p;
 }
@@ -591,9 +731,19 @@ CommandResult ConundrumRound::applyCommand(const CommandContext& ctx,
     return submitAttempt(ctx.senderBoardId, attempt);
 }
 
+void ConundrumRound::markExpired() {
+    expired_ = true;
+}
+
 std::optional<RoundResult> ConundrumRound::tryFinalize(
     const std::vector<uint32_t>& /*playerBoardIds*/) {
-    if (!solved_) return std::nullopt;
+    if (!solved_ && !expired_) return std::nullopt;
+    if (expired_ && !solved_) {
+        RoundResult res;
+        res.roundType = RoundType::Conundrum;
+        res.isTie = true;
+        return res;
+    }
 
     RoundResult res;
     res.roundType    = RoundType::Conundrum;
@@ -643,27 +793,33 @@ void CountdownMatchEngine::startNextRound(RoundType type, IRandomSource& random,
 
 NumbersRound* CountdownMatchEngine::numbersRound() {
     return (activeRound_ && activeRoundType_ == RoundType::Numbers)
-        ? static_cast<NumbersRound*>(activeRound_.get()) : nullptr;
+        ? static_cast<NumbersRound*>(activeRound_.get()) // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        : nullptr;
 }
 const NumbersRound* CountdownMatchEngine::numbersRound() const {
     return (activeRound_ && activeRoundType_ == RoundType::Numbers)
-        ? static_cast<const NumbersRound*>(activeRound_.get()) : nullptr;
+        ? static_cast<const NumbersRound*>(activeRound_.get()) // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        : nullptr;
 }
 LettersRound* CountdownMatchEngine::lettersRound() {
     return (activeRound_ && activeRoundType_ == RoundType::Letters)
-        ? static_cast<LettersRound*>(activeRound_.get()) : nullptr;
+        ? static_cast<LettersRound*>(activeRound_.get()) // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        : nullptr;
 }
 const LettersRound* CountdownMatchEngine::lettersRound() const {
     return (activeRound_ && activeRoundType_ == RoundType::Letters)
-        ? static_cast<const LettersRound*>(activeRound_.get()) : nullptr;
+        ? static_cast<const LettersRound*>(activeRound_.get()) // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        : nullptr;
 }
 ConundrumRound* CountdownMatchEngine::conundrumRound() {
     return (activeRound_ && activeRoundType_ == RoundType::Conundrum)
-        ? static_cast<ConundrumRound*>(activeRound_.get()) : nullptr;
+        ? static_cast<ConundrumRound*>(activeRound_.get()) // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        : nullptr;
 }
 const ConundrumRound* CountdownMatchEngine::conundrumRound() const {
     return (activeRound_ && activeRoundType_ == RoundType::Conundrum)
-        ? static_cast<const ConundrumRound*>(activeRound_.get()) : nullptr;
+        ? static_cast<const ConundrumRound*>(activeRound_.get()) // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+        : nullptr;
 }
 
 NumbersRoundProjection CountdownMatchEngine::numbersProjection() const {
@@ -709,5 +865,4 @@ void CountdownMatchEngine::recordRoundResult(const RoundResult& result) {
     }
 }
 
-} // namespace countdown
-} // namespace flip7
+} // namespace flip7::countdown

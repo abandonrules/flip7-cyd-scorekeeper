@@ -1,7 +1,7 @@
 /**
  * Open-Source Countdown Engine - Core Header
- * Platform-neutral C++ implementation of Countdown game rules, round plugins,
- * command-event reducer pattern, and score management.
+ * Platform-neutral C++ implementation of Countdown game rules (Numbers, Letters, Conundrum)
+ * and match-level score management.
  */
 
 #pragma once
@@ -13,10 +13,8 @@
 #include <memory>
 #include <optional>
 #include <algorithm>
-#include <cctype>
 
-namespace flip7 {
-namespace countdown {
+namespace flip7::countdown {
 
 enum class RoundType : uint8_t {
     Numbers   = 1,
@@ -83,7 +81,7 @@ enum class MatchPhase : uint8_t {
 template <typename T, size_t N>
 class FixedVector {
 public:
-    FixedVector() : size_(0) {}
+    FixedVector() : data_{}, size_(0) {}
     bool push_back(const T& v) {
         if (size_ >= N) return false;
         data_[size_++] = v;
@@ -95,17 +93,17 @@ public:
         return true;
     }
     T& back() { return data_[size_ - 1]; }
-    const T& back() const { return data_[size_ - 1]; }
+    [[nodiscard]] const T& back() const { return data_[size_ - 1]; }
     T& operator[](size_t i) { return data_[i]; }
     const T& operator[](size_t i) const { return data_[i]; }
-    size_t size() const { return size_; }
-    bool empty() const { return size_ == 0; }
-    bool full() const { return size_ >= N; }
+    [[nodiscard]] size_t size() const { return size_; }
+    [[nodiscard]] bool empty() const { return size_ == 0; }
+    [[nodiscard]] bool full() const { return size_ >= N; }
     void clear() { size_ = 0; }
     T* begin() { return data_; }
     T* end() { return data_ + size_; }
-    const T* begin() const { return data_; }
-    const T* end() const { return data_ + size_; }
+    [[nodiscard]] const T* begin() const { return data_; }
+    [[nodiscard]] const T* end() const { return data_ + size_; }
 private:
     T    data_[N];
     size_t size_;
@@ -200,9 +198,11 @@ struct LettersRoundProjection {
 };
 
 struct ConundrumRoundProjection {
+    char     solution[10]{0};
     char     scramble[10]{0};
     char     hint[48]{0};
     bool     solved{false};
+    bool     expired{false};
     uint32_t winnerBoardId{0};
 };
 
@@ -241,7 +241,7 @@ inline SeededRandomSource makeRoundRandom(uint32_t gameId, uint32_t roundNumber)
 class IRound {
 public:
     virtual ~IRound() = default;
-    virtual RoundType roundType() const = 0;
+    [[nodiscard]] virtual RoundType roundType() const = 0;
     virtual CommandResult applyCommand(const CommandContext& ctx,
                                        CommandType type,
                                        const std::vector<uint8_t>& payload) = 0;
@@ -256,16 +256,23 @@ public:
 
     static NumbersRound createRandom(IRandomSource& random, uint8_t largeCount);
 
-    uint32_t target() const { return target_; }
-    const std::vector<int32_t>& tiles() const { return tiles_; }
+    [[nodiscard]] uint32_t target() const { return target_; }
+    [[nodiscard]] const std::vector<int32_t>& tiles() const { return tiles_; }
 
     // Score table: exact=10, within 5=7, within 10=5, else 0.
     static int32_t calculateScore(uint32_t target, uint32_t achieved);
 
+    // Returns true if claimedValue can be reached from tiles_ using
+    // +, -, *, / operations (each tile used at most once).
+    [[nodiscard]] static bool isValueReachable(int32_t target,
+                                                const std::vector<int32_t>& tiles);
+
     // Private claim — stored by boardId; not revealed until both submitted.
+    // Validates that claimedValue is reachable from tiles_; rejects unreachable
+    // values with CLAIM_UNREACHABLE.
     CommandResult submitClaim(uint32_t boardId, int32_t claimedValue);
-    bool bothClaimsSubmitted() const;
-    int32_t claimFor(uint32_t boardId) const;
+    [[nodiscard]] bool bothClaimsSubmitted() const;
+    [[nodiscard]] int32_t claimFor(uint32_t boardId) const;
 
     // Presentation step — host validates; ContinueWithResult leaves result as
     // currentValue; BankResult returns it to the available pool for branching.
@@ -273,13 +280,13 @@ public:
                             int32_t operandA, int32_t operandB,
                             bool bankResult = false);
     CommandResult undoStep(uint32_t boardId);
-    CommandResult completePresentaton(uint32_t boardId);
+    CommandResult completePresentation(uint32_t boardId);
 
-    const NumberPlayerState* playerState(uint32_t boardId) const;
-    NumbersRoundProjection projection() const;
+    [[nodiscard]] const NumberPlayerState* playerState(uint32_t boardId) const;
+    [[nodiscard]] NumbersRoundProjection projection() const;
 
     // IRound
-    RoundType roundType() const override { return RoundType::Numbers; }
+    [[nodiscard]] RoundType roundType() const override { return RoundType::Numbers; }
     CommandResult applyCommand(const CommandContext& ctx, CommandType type,
                                const std::vector<uint8_t>& payload) override;
     std::optional<RoundResult> tryFinalize(
@@ -299,22 +306,24 @@ public:
     // Picking phase — called by host; enforces 3-5 vowel / 4-6 consonant constraints.
     bool drawVowel(IRandomSource& random);
     bool drawConsonant(IRandomSource& random);
-    bool canDrawVowel() const;
-    bool canDrawConsonant() const;
+    [[nodiscard]] bool canDrawVowel() const;
+    [[nodiscard]] bool canDrawConsonant() const;
 
-    const std::string& drawnLetters() const { return drawnLetters_; }
-    size_t letterCount() const { return drawnLetters_.size(); }
-    size_t vowelCount() const { return vowelCount_; }
-    size_t consonantCount() const { return consonantCount_; }
-    bool isSelectionComplete() const { return drawnLetters_.size() >= 9; }
+    [[nodiscard]] const std::string& drawnLetters() const { return drawnLetters_; }
+    [[nodiscard]] size_t letterCount() const { return drawnLetters_.size(); }
+    [[nodiscard]] size_t vowelCount() const { return vowelCount_; }
+    [[nodiscard]] size_t consonantCount() const { return consonantCount_; }
+    [[nodiscard]] bool isSelectionComplete() const { return drawnLetters_.size() >= 9; }
+
+    bool syncDrawnLetters(const std::string& letters);
 
     static bool isValidSubset(const std::string& word,
                               const std::string& availableLetters);
 
     // Claim phase — private word-length claim per player.
     CommandResult submitClaim(uint32_t boardId, uint8_t claimedLength);
-    bool bothClaimsSubmitted() const;
-    uint8_t claimFor(uint32_t boardId) const;
+    [[nodiscard]] bool bothClaimsSubmitted() const;
+    [[nodiscard]] uint8_t claimFor(uint32_t boardId) const;
 
     // Presentation phase — presenter taps tiles by letter index (0-8).
     CommandResult presentTileTap(uint32_t boardId, uint8_t tileIndex);
@@ -322,17 +331,18 @@ public:
     CommandResult presentComplete(uint32_t boardId);
     CommandResult verifyWord(uint32_t verifierBoardId, bool accepted);
 
-    const std::string& presentedWordFor(uint32_t boardId) const;
-    LettersRoundProjection projection() const;
+    [[nodiscard]] const std::string& presentedWordFor(uint32_t boardId) const;
+    [[nodiscard]] bool verificationFor(uint32_t boardId) const;
+    [[nodiscard]] LettersRoundProjection projection() const;
 
     // IRound
-    RoundType roundType() const override { return RoundType::Letters; }
+    [[nodiscard]] RoundType roundType() const override { return RoundType::Letters; }
     CommandResult applyCommand(const CommandContext& ctx, CommandType type,
                                const std::vector<uint8_t>& payload) override;
     std::optional<RoundResult> tryFinalize(
         const std::vector<uint32_t>& playerBoardIds) override;
 
-    RoundResult evaluate(const std::vector<uint32_t>& playerBoardIds) const;
+    [[nodiscard]] RoundResult evaluate(const std::vector<uint32_t>& playerBoardIds) const;
 
 private:
     std::string drawnLetters_;
@@ -345,29 +355,40 @@ private:
 };
 
 // Conundrum Round State & Logic
-// Both players attempt simultaneously — no buzz mechanic.
+// Simultaneous attempt with bounded buzz-window; both players may attempt
+// until the deadline expires or the conundrum is solved.
 class ConundrumRound : public IRound {
 public:
-    ConundrumRound(const std::string& solution, const std::string& scramble,
-                   const std::string& hint);
+    ConundrumRound(std::string  solution, std::string  scramble,
+                   std::string  hint);
 
     // Pick a random conundrum from the built-in content table.
     static ConundrumRound createRandom(IRandomSource& random);
 
-    const std::string& solution() const { return solution_; }
-    const std::string& scramble() const { return scramble_; }
-    const std::string& hint()     const { return hint_; }
+    [[nodiscard]] const std::string& solution() const { return solution_; }
+    [[nodiscard]] const std::string& scramble() const { return scramble_; }
+    [[nodiscard]] const std::string& hint()     const { return hint_; }
+
+    // Set the submission deadline (absolute ms timestamp).
+    void setDeadlineMs(uint32_t deadlineMs) { deadlineMs_ = deadlineMs; }
+    [[nodiscard]] uint32_t deadlineMs() const { return deadlineMs_; }
+    [[nodiscard]] bool hasDeadlineElapsed(uint32_t nowMs) const {
+        return deadlineMs_ > 0 && nowMs >= deadlineMs_;
+    }
 
     // Simultaneous attempt — checked immediately; no turn-based locking.
     // Returns accepted=true only when attempt matches solution.
+    // Returns DEADLINE_ELAPSED if the buzz-window has expired.
     CommandResult submitAttempt(uint32_t boardId, const std::string& attempt);
 
-    bool isSolved() const { return solved_; }
-    uint32_t winnerBoardId() const { return winnerBoardId_; }
-    ConundrumRoundProjection projection() const;
+    [[nodiscard]] bool isSolved() const { return solved_; }
+    [[nodiscard]] bool isExpired() const { return expired_; }
+    void markExpired();
+    [[nodiscard]] uint32_t winnerBoardId() const { return winnerBoardId_; }
+    [[nodiscard]] ConundrumRoundProjection projection() const;
 
     // IRound
-    RoundType roundType() const override { return RoundType::Conundrum; }
+    [[nodiscard]] RoundType roundType() const override { return RoundType::Conundrum; }
     CommandResult applyCommand(const CommandContext& ctx, CommandType type,
                                const std::vector<uint8_t>& payload) override;
     std::optional<RoundResult> tryFinalize(
@@ -378,6 +399,8 @@ private:
     std::string scramble_;
     std::string hint_;
     bool     solved_{false};
+    bool     expired_{false};
+    uint32_t deadlineMs_{0};
     uint32_t winnerBoardId_{0};
 };
 
@@ -387,33 +410,33 @@ public:
     CountdownMatchEngine(uint32_t hostBoardId, uint32_t guestBoardId,
                          uint32_t gameId);
 
-    uint32_t gameId()       const { return gameId_; }
-    uint32_t hostBoardId()  const { return hostBoardId_; }
-    uint32_t guestBoardId() const { return guestBoardId_; }
+    [[nodiscard]] uint32_t gameId()       const { return gameId_; }
+    [[nodiscard]] uint32_t hostBoardId()  const { return hostBoardId_; }
+    [[nodiscard]] uint32_t guestBoardId() const { return guestBoardId_; }
     // Score leader — owns authoritative game state.
-    uint32_t hostPlayerId()   const { return hostBoardId_; }
+    [[nodiscard]] uint32_t hostPlayerId()   const { return hostBoardId_; }
     // Previous round winner — picks the next round type.
-    uint32_t chooserBoardId() const { return chooserBoardId_; }
-    uint32_t hostTerm()       const { return hostTerm_; }
-    MatchPhase phase()        const { return phase_; }
-    uint32_t roundNumber()    const { return roundNumber_; }
+    [[nodiscard]] uint32_t chooserBoardId() const { return chooserBoardId_; }
+    [[nodiscard]] uint32_t hostTerm()       const { return hostTerm_; }
+    [[nodiscard]] MatchPhase phase()        const { return phase_; }
+    [[nodiscard]] uint32_t roundNumber()    const { return roundNumber_; }
 
-    const PlayerState& hostPlayer()  const { return hostPlayer_; }
-    const PlayerState& guestPlayer() const { return guestPlayer_; }
+    [[nodiscard]] const PlayerState& hostPlayer()  const { return hostPlayer_; }
+    [[nodiscard]] const PlayerState& guestPlayer() const { return guestPlayer_; }
 
-    bool isHost(uint32_t boardId)    const { return boardId == hostBoardId_; }
-    bool isChooser(uint32_t boardId) const { return boardId == chooserBoardId_; }
+    [[nodiscard]] bool isHost(uint32_t boardId)    const { return boardId == hostBoardId_; }
+    [[nodiscard]] bool isChooser(uint32_t boardId) const { return boardId == chooserBoardId_; }
 
     // Convenience snapshot for UI rendering.
     struct MatchState {
         PlayerState hostPlayer;
         PlayerState guestPlayer;
-        MatchPhase  phase;
-        uint32_t    roundNumber;
-        uint32_t    chooserBoardId;
-        uint32_t    hostTerm;
+        MatchPhase  phase{MatchPhase::Setup};
+        uint32_t    roundNumber{0};
+        uint32_t    chooserBoardId{0};
+        uint32_t    hostTerm{1};
     };
-    MatchState matchState() const {
+    [[nodiscard]] MatchState matchState() const {
         return MatchState{hostPlayer_, guestPlayer_, phase_,
                           roundNumber_, chooserBoardId_, hostTerm_};
     }
@@ -434,35 +457,54 @@ public:
         activeRound_.reset();
     }
 
+    // Reconcile authority and match metadata received from the wire without
+    // discarding an already-synchronized active round.
+    void syncWireState(uint32_t hostBoardId, uint32_t guestBoardId,
+                       uint32_t chooserBoardId, uint32_t hostTerm,
+                       uint32_t roundNumber, int32_t hostScore,
+                       int32_t guestScore) {
+        hostBoardId_ = hostBoardId;
+        guestBoardId_ = guestBoardId;
+        chooserBoardId_ = chooserBoardId;
+        hostTerm_ = hostTerm;
+        roundNumber_ = roundNumber;
+        hostPlayer_.boardId = hostBoardId;
+        hostPlayer_.isHost = true;
+        hostPlayer_.score = hostScore;
+        guestPlayer_.boardId = guestBoardId;
+        guestPlayer_.isHost = false;
+        guestPlayer_.score = guestScore;
+    }
+
     // Create and store the active round object; advance to InRound.
     void startNextRound(RoundType type, IRandomSource& random,
                         uint8_t largeCount = 2);
 
     // Active round access — nullptr when no round is in progress.
     IRound*       activeRound()       { return activeRound_.get(); }
-    const IRound* activeRound() const { return activeRound_.get(); }
-    RoundType     activeRoundType()   const { return activeRoundType_; }
+    [[nodiscard]] const IRound* activeRound() const { return activeRound_.get(); }
+    [[nodiscard]] RoundType     activeRoundType()   const { return activeRoundType_; }
 
     // Round-type-specific accessors — nullptr when a different round type is active.
     // Uses static_cast guarded by activeRoundType_ (no RTTI / dynamic_cast needed).
     NumbersRound*        numbersRound();
-    const NumbersRound*  numbersRound()  const;
+    [[nodiscard]] const NumbersRound*  numbersRound()  const;
     LettersRound*        lettersRound();
-    const LettersRound*  lettersRound()  const;
+    [[nodiscard]] const LettersRound*  lettersRound()  const;
     ConundrumRound*      conundrumRound();
-    const ConundrumRound* conundrumRound() const;
+    [[nodiscard]] const ConundrumRound* conundrumRound() const;
 
     // Display projections — safe to copy across tasks; return empty structs when
     // no round of that type is active.
-    NumbersRoundProjection   numbersProjection()   const;
-    LettersRoundProjection   lettersProjection()   const;
-    ConundrumRoundProjection conundrumProjection() const;
+    [[nodiscard]] NumbersRoundProjection   numbersProjection()   const;
+    [[nodiscard]] LettersRoundProjection   lettersProjection()   const;
+    [[nodiscard]] ConundrumRoundProjection conundrumProjection() const;
 
     // Apply score updates; update hostBoardId (score leader) and chooserBoardId
     // (round winner) independently per ADR-005.
     void recordRoundResult(const RoundResult& result);
 
-    bool isMatchComplete() const { return phase_ == MatchPhase::MatchComplete; }
+    [[nodiscard]] bool isMatchComplete() const { return phase_ == MatchPhase::MatchComplete; }
 
 private:
     uint32_t   gameId_{0};
@@ -478,5 +520,4 @@ private:
     std::unique_ptr<IRound> activeRound_;
 };
 
-} // namespace countdown
-} // namespace flip7
+} // namespace flip7::countdown

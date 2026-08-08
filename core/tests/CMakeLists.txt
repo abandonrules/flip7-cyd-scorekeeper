@@ -6,14 +6,16 @@ project(flip7core_tests LANGUAGES CXX)
 
 find_package(GTest REQUIRED)
 
-# Test executable
+# Build the core library first (defines flip7core target)
+set(BUILD_TESTS OFF)
+add_subdirectory(..)
+
+# Test executable - only include test files that actually exist
 add_executable(flip7core_tests
     protocol_test.cpp
     serialization_test.cpp
     reconciliation_test.cpp
-    mastermind_test.cpp
-    puzzle_test.cpp
-    golden_packet_test.cpp
+    countdown_test.cpp
 )
 
 target_link_libraries(flip7core_tests PRIVATE
@@ -23,7 +25,3 @@ target_link_libraries(flip7core_tests PRIVATE
 )
 
 add_test(NAME flip7core_tests COMMAND flip7core_tests)
-
-# Also build the main library with tests enabled
-set(BUILD_TESTS ON)
-add_subdirectory(..)
