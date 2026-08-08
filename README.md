@@ -5,10 +5,14 @@ ESP32-2432S028 (Cheap Yellow Display) boards.
 
 ## Games
 
-- **Greek Slide** — a shared 4×3 sliding puzzle with alternating turns.
-- **Mastermind** — one device privately enters a four-color code and the
-  other gets ten duplicate-aware guesses. Roles swap automatically after
-  every round and the match score persists between rounds.
+- **Greek Slide** — a synchronized 4×3 sliding puzzle using Greek symbols.
+- **Planet Slide** — a synchronized 3×3 sliding puzzle using planet symbols.
+- **Periodic Order** — a synchronized 4×3 sliding puzzle where 11 random
+  chemical elements must be arranged by ascending atomic number.
+- **Mastermind** — a two-player codebreaker match with four pegs, six colors,
+  duplicate-aware feedback, ten guesses, automatic role swaps, and match score.
+- **Aquarium** — a shared idle/waiting screen with synced fish, feeding, hunger,
+  and peer synchronization.
 
 The host chooses a game from the home screen. Mastermind uses six colors,
 allows repeated colors, reports exact-position (`E`) and color-only (`C`)
@@ -46,7 +50,29 @@ pio run
 
 Do not commit `espnow.env` or disclose its values. CI generates ephemeral build-only keys because CI firmware is not installed on the physical pair.
 
-### Security and recovery model
+## Companion hardware
+
+The working CircuitPython keypad program from the companion Adafruit MacroPad
+RP2040 is preserved under [`macropad/keypad/`](macropad/keypad/README.md),
+including the exact deployed library set and restore instructions.
+
+## Sliding puzzles
+
+The paired CYDs offer three synchronized, alternating-turn layouts:
+
+- **Planet Slide:** a 3×3 eight-piece puzzle using the astronomical
+  symbols for Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, and
+  Neptune.
+- **Greek Slide:** the original 4×3 eleven-piece Greek-symbol puzzle.
+- **Periodic Order:** a synchronized 4×3 sliding puzzle where 11 random
+  chemical elements must be arranged by ascending atomic number.
+
+A correctly positioned piece is visually locked by removing its colored
+background. Either player can press `EXIT` at any time, including while a move
+is still awaiting acknowledgment or the peer is temporarily offline. EXIT is
+synchronized and retried until both devices return to the selector.
+
+## Security and recovery model
 
 The fixed encrypted CYDs are trusted game appliances. Mastermind hides the
 codemaker's secret from the codebreaker's UI, but synchronizes the encrypted

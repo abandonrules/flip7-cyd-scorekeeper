@@ -82,6 +82,7 @@ static_assert(offsetof(::PuzzleState, turnBoardId) == 44,
 static_assert(sizeof(::PuzzleState) == 48, "PuzzleState size changed");
 static_assert(offsetof(PacketHeader, senderId) == 8,
               "PacketHeader senderId offset changed");
+
 struct PuzzleAckPacket {
     PacketHeader header;
     uint32_t targetBoardId;

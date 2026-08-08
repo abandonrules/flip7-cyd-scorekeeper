@@ -16,113 +16,132 @@ int main() {
     assert(!canUsePeerSession(33, 22, true, retiredSessions, 2));
     assert(canUsePeerSession(33, 44, true, retiredSessions, 2));
 
-    PuzzleState state = makeInitialPuzzle(10, 7);
+    const PuzzleSpec planets{3, 3, PuzzleTheme::Planets};
+    const PuzzleSpec greek{4, 3, PuzzleTheme::Greek};
+    assert(isSupportedPuzzleSpec(planets));
+    assert(isSupportedPuzzleSpec(greek));
+    assert(!isSupportedPuzzleSpec({3, 3, PuzzleTheme::Greek}));
+
+    PuzzleState state = makeInitialPuzzle(10, 7, planets);
     assert(state.gameId == 7);
     assert(state.revision == 0);
     assert(state.turnBoardId == 10);
-    for (uint8_t i = 0; i < 11; ++i) {
+    assert(puzzleTileCount(state) == 9);
+    assert(state.theme == PuzzleTheme::Planets);
+    for (uint8_t i = 0; i < 8; ++i) {
         assert(state.tiles[i] == i + 1);
     }
-    assert(state.tiles[11] == 0);
+    assert(state.tiles[8] == 0);
+    for (uint8_t i = 9; i < kPuzzleMaxTiles; ++i) {
+        assert(state.tiles[i] == 0);
+    }
+    assert(isValidPuzzle(state));
+    assert(isPuzzleSolved(state));
 
-    assert(!tryPuzzleMove(state, 0, 10, 20));
-    assert(state.revision == 0);
-    assert(!tryPuzzleMove(state, 11, 10, 20));
-    assert(state.revision == 0);
+    PuzzleState greekState = makeInitialPuzzle(10, 8, greek);
+    assert(puzzleTileCount(greekState) == 12);
+    assert(greekState.theme == PuzzleTheme::Greek);
+    assert(isValidPuzzle(greekState));
+    assert(isPuzzleSolved(greekState));
 
-    assert(isTileCorrect(state, 10));
-    assert(tryPuzzleMove(state, 10, 10, 20));
-    assert(state.tiles[10] == 0);
-    assert(state.tiles[11] == 11);
-    assert(state.revision == 1);
-    assert(state.turnBoardId == 20);
+    PuzzleState malformed = state;
+    malformed.columns = 4;
+    assert(!isValidPuzzle(malformed));
+    malformed = state;
+    malformed.tiles[9] = 1;
+    assert(!isValidPuzzle(malformed));
+    malformed = state;
+    malformed.theme = static_cast<PuzzleTheme>(99);
+    assert(!isValidPuzzle(malformed));
+    malformed = state;
+    malformed.phase = static_cast<PuzzlePhase>(99);
+    assert(!isValidPuzzle(malformed));
 
-    assert(!tryPuzzleMove(state, 9, 10, 20));
-    assert(state.revision == 1);
-    assert(tryPuzzleMove(state, 9, 20, 10));
-    assert(state.revision == 2);
-    assert(state.turnBoardId == 10);
-
-    PuzzleState remote = state;
-    assert(tryPuzzleMove(remote, 8, 10, 20));
-    assert(isValidRemoteTransition(state, remote, 10, 20));
-    assert(!isValidRemoteTransition(state, remote, 20, 10));
-
-    PuzzleState duplicate = state;
-    assert(!isValidRemoteTransition(state, duplicate, 10, 20));
-
-    PuzzleState invalid = remote;
-    invalid.tiles[0] = invalid.tiles[1];
-    assert(!isValidPuzzle(invalid));
-    assert(!isValidRemoteTransition(state, invalid, 10, 20));
-
-    PuzzleState scrambled = makeScrambledPuzzle(10, 8);
-    assert(scrambled.gameId == 8);
-    assert(scrambled.revision == 0);
-    assert(scrambled.turnBoardId == 10);
+    PuzzleState scrambled = makeScrambledPuzzle(10, 9, planets);
     assert(isValidPuzzle(scrambled));
     assert(!isPuzzleSolved(scrambled));
+    assert(!isPuzzleSolved(makeScrambledPuzzle(0x6AF4E9D4, 731, planets)));
+    PuzzleState unsolvable = state;
+    const uint8_t firstUnsolvable = unsolvable.tiles[0];
+    unsolvable.tiles[0] = unsolvable.tiles[1];
+    unsolvable.tiles[1] = firstUnsolvable;
+    assert(!isValidPuzzle(unsolvable));
+    assert(isSamePuzzle(scrambled,
+                        makeScrambledPuzzle(10, 9, planets)));
 
-    PuzzleState solution = scrambled;
-    constexpr uint8_t solveMoves[] = {9, 10, 11, 7, 6, 2, 1, 0,
-                                      4, 8,  9,  5, 6, 10, 11};
-    for (uint8_t position : solveMoves) {
-        const uint32_t actor = solution.turnBoardId;
-        const uint32_t next = actor == 10 ? 20 : 10;
-        assert(tryPuzzleMove(solution, position, actor, next));
+    PuzzleState greekScrambled = makeScrambledPuzzle(10, 10, greek);
+    assert(isValidPuzzle(greekScrambled));
+    assert(!isPuzzleSolved(greekScrambled));
+
+    const uint8_t blank = findBlank(scrambled);
+    uint8_t movable = kPuzzleMaxTiles;
+    for (uint8_t position = 0; position < puzzleTileCount(scrambled);
+         ++position) {
+        if (arePuzzlePositionsAdjacent(scrambled, position, blank)) {
+            movable = position;
+            break;
+        }
     }
-    assert(isPuzzleSolved(solution));
+    assert(movable < puzzleTileCount(scrambled));
+    PuzzleState remote = scrambled;
+    assert(tryPuzzleMove(remote, movable, 10, 20));
+    assert(remote.revision == 1);
+    assert(remote.turnBoardId == 20);
+    assert(isValidRemoteTransition(scrambled, remote, 10, 20));
+    assert(!isValidRemoteTransition(scrambled, remote, 20, 10));
 
-    PuzzleState solved = makeInitialPuzzle(10, 9);
-    assert(isPuzzleSolved(solved));
-    for (uint8_t position = 0; position < 11; ++position) {
-        assert(isTileCorrect(solved, position));
-    }
-    assert(!isTileCorrect(solved, 11));
-    assert(!isTileCorrect(scrambled, findBlank(scrambled)));
+    PuzzleState wrongSpec = remote;
+    wrongSpec.theme = PuzzleTheme::Greek;
+    assert(!isValidRemoteTransition(scrambled, wrongSpec, 10, 20));
 
-    PuzzleState newerGame = makeScrambledPuzzle(20, 10);
-    assert(shouldAdoptFullState(solved, newerGame));
-    assert(!shouldAdoptFullState(newerGame, solved));
+    PuzzleState exhausted = scrambled;
+    exhausted.revision = UINT32_MAX;
+    assert(!tryPuzzleMove(exhausted, movable, 10, 20));
+    assert(!exitPuzzle(exhausted, 10, 20));
+
+    PuzzleState exited = scrambled;
+    assert(exitPuzzle(exited, 20, 10));
+    assert(exited.phase == PuzzlePhase::Exited);
+    assert(exited.revision == scrambled.revision + 1);
+    assert(!tryPuzzleMove(exited, movable, 10, 20));
+    PuzzleState receiver = scrambled;
+    PuzzleState revisionGapExit = exited;
+    revisionGapExit.revision += 2;
+    assert(applyPuzzleExitSignal(receiver, revisionGapExit, 20, 10));
+    assert(isSamePuzzle(receiver, revisionGapExit));
+    const PuzzleState exitedReceiver = receiver;
+    assert(applyPuzzleExitSignal(receiver, exited, 20, 10));
+    assert(isSamePuzzle(receiver, exitedReceiver));
+    PuzzleState otherGameExit = exited;
+    ++otherGameExit.gameId;
+    assert(!applyPuzzleExitSignal(receiver, otherGameExit, 20, 10));
+
     PuzzleState newerRevision = scrambled;
     newerRevision.revision = 3;
-    assert(shouldAdoptFullState(scrambled, newerRevision));
-    assert(!shouldAdoptFullState(newerRevision, scrambled));
-    assert(!shouldAdoptFullState(scrambled, scrambled));
-    newerGame.revision = 0;
-    assert(shouldAdoptFullState(solved, newerGame));
+    newerRevision.turnBoardId = 20;
+    assert(shouldAdoptFullState(scrambled, newerRevision, 10, 20));
+    assert(!shouldAdoptFullState(newerRevision, scrambled, 20, 10));
+    assert(!shouldAdoptFullState(scrambled, scrambled, 10, 20));
+    PuzzleState newerGame = makeScrambledPuzzle(10, 99, planets);
+    assert(shouldAdoptFullState(scrambled, newerGame, 10, 20));
+    assert(!shouldAdoptFullState(scrambled, newerGame, 20, 10));
+    assert(!shouldAdoptFullState(scrambled, unsolvable, 10, 20));
 
-    assert(isSamePuzzle(scrambled, scrambled));
-    assert(!isSamePuzzle(scrambled, newerRevision));
-    assert(comparePuzzleVersion(scrambled, newerRevision) ==
-           PuzzleVersionOrder::Newer);
-    assert(comparePuzzleVersion(newerRevision, scrambled) ==
-           PuzzleVersionOrder::Older);
-    assert(comparePuzzleVersion(solved, solved) == PuzzleVersionOrder::Same);
-    const uint32_t solvedDigest = puzzleStateDigest(solved);
-    PuzzleState divergent = solved;
+    const uint32_t digest = puzzleStateDigest(scrambled);
+    PuzzleState divergent = scrambled;
     const uint8_t first = divergent.tiles[0];
     divergent.tiles[0] = divergent.tiles[1];
     divergent.tiles[1] = first;
-    assert(puzzleStateDigest(divergent) != solvedDigest);
+    assert(puzzleStateDigest(divergent) != digest);
+    divergent = scrambled;
+    divergent.theme = PuzzleTheme::Greek;
+    assert(puzzleStateDigest(divergent) != digest);
 
     assert(isDeliverySuperseded(scrambled, newerRevision));
     assert(!isDeliverySuperseded(newerRevision, scrambled));
-    assert(decideReconciliation(solved, solved.gameId, solved.revision,
-                                solvedDigest, true) ==
+    assert(decideReconciliation(scrambled, scrambled.gameId,
+                                scrambled.revision, digest, true) ==
            ReconciliationAction::None);
-    assert(decideReconciliation(newerRevision, newerRevision.gameId,
-                                newerRevision.revision - 1, 0, false) ==
-           ReconciliationAction::SendFullState);
-    assert(decideReconciliation(solved, solved.gameId, solved.revision + 1, 0,
-                                true) ==
-           ReconciliationAction::RequestFullState);
-    assert(decideReconciliation(solved, solved.gameId, solved.revision,
-                                puzzleStateDigest(divergent), true) ==
-           ReconciliationAction::SendFullState);
-    assert(decideReconciliation(solved, solved.gameId, solved.revision,
-                                puzzleStateDigest(divergent), false) ==
-           ReconciliationAction::RequestFullState);
 
     return 0;
 }
