@@ -20,7 +20,7 @@ jobs:
         run: pio run
       - name: Test game logic
         run: |
-          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/puzzle_logic_test.cpp -o /tmp/puzzle_logic_test
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude -Icore/include test/puzzle_logic_test.cpp -o /tmp/puzzle_logic_test
           /tmp/puzzle_logic_test
-          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/mastermind_logic_test.cpp -o /tmp/mastermind_logic_test
+          g++ -std=c++17 -Wall -Wextra -Werror -Iinclude -Icore/include test/mastermind_logic_test.cpp -o /tmp/mastermind_logic_test
           /tmp/mastermind_logic_test
