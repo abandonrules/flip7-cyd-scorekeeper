@@ -173,7 +173,7 @@ bool sendMastermindFullStateSoon = false;
 bool touchWasDown = false;
 bool lastOnline = false;
 uint8_t selectedPeg = 0;
-MastermindPhase lastAdoptedMastermindPhase = MastermindPhase::Exited;
+// MastermindPhase lastAdoptedMastermindPhase — reserved for future use
 
 PacketHeader makeHeader(MessageType type) {
     return PacketHeader{kProtocolMagic, kProtocolVersion, type, boardId,
@@ -1205,7 +1205,6 @@ void processMastermindStatePacket(const uint8_t* address,
             if (!mastermindStateReady ||
                 isValidMastermindTransition(mastermindState, packet.state,
                                             packet.header.senderId)) {
-                oldPhase = mastermindState.phase;
                 mastermindState = packet.state;
                 mastermindStateReady = true;
                 accepted = true;
@@ -1485,11 +1484,16 @@ void sendMastermindStateRequest() {
         digest = mastermindStateDigest(mastermindState);
     }
     portEXIT_CRITICAL(&gameMux);
+    if (protocolMutex == nullptr ||
+        xSemaphoreTake(protocolMutex, portMAX_DELAY) != pdTRUE) {
+        return;
+    }
     MastermindStateRequestPacket packet{
         makeHeader(MessageType::MastermindRequestState), gameId, revision,
         digest};
     esp_now_send(expectedPeerAddress, reinterpret_cast<uint8_t*>(&packet),
                  sizeof(packet));
+    xSemaphoreGive(protocolMutex);
 }
 
 void refreshPeerIdentity() {
